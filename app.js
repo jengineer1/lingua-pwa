@@ -653,7 +653,7 @@ const API_MODEL = 'claude-sonnet-4-5';
 
 const getKey = () => localStorage.getItem('lingua.key') || '';
 const setKey = k => localStorage.setItem('lingua.key', k.trim());
-const getRegion = () => localStorage.getItem('lingua.region') || 'Colombian';
+const getRegion = () => localStorage.getItem('lingua.region') || 'Mexican';
 
 async function callAPI(system, messages, maxTokens = 1200) {
   const key = getKey();
@@ -677,8 +677,16 @@ async function callAPI(system, messages, maxTokens = 1200) {
 }
 
 function regionLine() {
-  return `The learner studies ${getRegion()} Spanish. Prefer the vocabulary, `
-       + `register and forms actually used there, and say so when a usage is regional.`;
+  // Two different jobs. When the learner PRODUCES Spanish, target their
+  // variety. When they are READING someone else's Spanish, explain what that
+  // speaker actually meant - normalising a Colombian idiom into Mexican usage
+  // would hide the thing they were confused by.
+  return `The learner's target variety is ${getRegion()} Spanish, but they listen `
+       + `to speakers from across Latin America.\n`
+       + `When producing Spanish for them, use ${getRegion()} vocabulary and register.\n`
+       + `When explaining Spanish they are reading or hearing, explain it as the `
+       + `speaker meant it in their own variety. Name the region when a usage is `
+       + `regional, and mention the ${getRegion()} equivalent when it differs.`;
 }
 
 /* Window of sentences around the current one. Small on purpose: a few
@@ -817,14 +825,15 @@ function showSettings() {
     <input id="k" type="password" placeholder="sk-ant-..." value="${esc(getKey())}"
       style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
              border-radius:9px;padding:11px;font:inherit;font-size:16px;margin-bottom:8px">
-    <input id="rg" placeholder="Colombian" value="${esc(getRegion())}"
+    <input id="rg" placeholder="Mexican" value="${esc(getRegion())}"
       style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
              border-radius:9px;padding:11px;font:inherit;font-size:16px">
-    <div class="lm" style="margin-top:6px">Regional variety used in answers</div>
+    <div class="lm" style="margin-top:6px">Variety used when writing Spanish for you.
+      Material you read is still explained in the speaker's own variety.</div>
     <div class="row"><button id="ksave">Save</button></div>`);
   $('ksave').onclick = () => {
     setKey($('k').value);
-    localStorage.setItem('lingua.region', $('rg').value.trim() || 'Colombian');
+    localStorage.setItem('lingua.region', $('rg').value.trim() || 'Mexican');
     hideSheet(); toast('Saved');
   };
 }
