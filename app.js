@@ -524,9 +524,9 @@ function showMenu() {
   $('sheet').querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
     hideSheet();
     const a = b.dataset.act;
-    if (a === 'import') { $('file').accept = '.lpkg,.zip'; $('file').click(); }
+    if (a === 'import') { S.expect = 'lesson'; $('file').click(); }
     else if (a === 'export') exportBackup();
-    else if (a === 'restore') { $('file').accept = '.json'; $('file').click(); }
+    else if (a === 'restore') { S.expect = 'backup'; $('file').click(); }
     else if (a === 'persist') {
       if (navigator.storage && navigator.storage.persist) {
         const ok = await navigator.storage.persist();
@@ -565,14 +565,17 @@ $('script').addEventListener('click', e => {
 $('file').addEventListener('change', async e => {
   for (const f of e.target.files) {
     try {
-      if (f.name.endsWith('.json')) await importBackup(f);
-      else await importFile(f);
+      const head = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+      const isZip = head[0] === 0x50 && head[1] === 0x4b;   // 'PK'
+      if (isZip) await importFile(f);
+      else if (f.name.endsWith('.json') || S.expect === 'backup') await importBackup(f);
+      else throw new Error('Not a lesson package or backup');
     } catch (err) { toast('Failed: ' + err.message, 4000); console.error(err); }
   }
   e.target.value = '';
 });
 
-$('import1').onclick = $('import2').onclick = () => { $('file').accept = '.lpkg,.zip'; $('file').click(); };
+$('import1').onclick = $('import2').onclick = () => { S.expect = 'lesson'; $('file').click(); };
 $('menu').onclick = showMenu;
 $('back').onclick = closeLesson;
 $('scrim').onclick = hideSheet;
