@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lingua">
+<meta name="theme-color" content="#14140f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Lingua</title>
+<style>
+:root {
+  --bg:#14140f; --panel:#1c1c16; --line:#2e2e26; --fg:#e8e6dd;
+  --dim:#8d8b80; --accent:#d9a441;
+  --new:#3a3320; --new-b:#7a6528;
+  --learn:#2a3320; --learn-b:#55702a;
+  --top: env(safe-area-inset-top);
+  --bot: env(safe-area-inset-bottom);
+}
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; height:100%; overflow:hidden; overscroll-behavior:none; }
+body {
+  background:var(--bg); color:var(--fg);
+  font:16px/1.6 -apple-system,system-ui,sans-serif;
+  display:flex; flex-direction:column;
+}
+button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
+.hidden { display:none !important; }
+
+/* ---- chrome ---- */
+#bar {
+  display:flex; align-items:center; gap:10px;
+  padding:calc(var(--top) + 8px) 12px 8px;
+  background:var(--panel); border-bottom:1px solid var(--line);
+  flex-shrink:0; font-size:14px;
+}
+#bar .sp { flex:1; }
+#bar button {
+  padding:6px 10px; border:1px solid var(--line); border-radius:7px;
+  font-size:13px; background:#262620;
+}
+#bar button.on { background:var(--accent); color:#14140f; border-color:var(--accent); }
+#title { font-weight:600; font-size:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#stat { font-size:12px; color:var(--dim); }
+
+/* ---- library ---- */
+#library { flex:1; overflow-y:auto; padding:14px 14px calc(var(--bot) + 30px);
+  -webkit-overflow-scrolling:touch; }
+.card {
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  padding:14px; margin-bottom:10px; display:flex; align-items:center; gap:12px;
+}
+.card .body { flex:1; min-width:0; }
+.card h3 { margin:0 0 3px; font-size:16px; font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.card .meta { font-size:12px; color:var(--dim); }
+.card .known { font-size:12px; color:var(--accent); margin-top:3px; }
+.card .del { color:var(--dim); font-size:20px; padding:6px 10px; }
+.series { font-size:12px; color:var(--dim); text-transform:uppercase;
+  letter-spacing:.06em; margin:16px 0 7px; }
+#empty { text-align:center; color:var(--dim); padding:50px 24px; }
+#empty p { margin:8px 0; font-size:14px; }
+.big {
+  display:block; width:100%; padding:13px; margin-top:14px;
+  background:var(--accent); color:#14140f; border-radius:10px;
+  font-weight:600; text-align:center;
+}
+.ghost { background:#262620; color:var(--fg); border:1px solid var(--line); }
+
+/* ---- player ---- */
+#player { flex:1; display:flex; flex-direction:column; min-height:0; }
+#stage {
+  background:#000; flex:0 0 auto; height:38vh; position:relative;
+  transition:height .18s ease; overflow:hidden;
+}
+#stage.audio { background:var(--panel); height:auto; padding:12px; }
+#stage.big { height:60vh; }
+#stage.off { height:0; }
+#stage video { width:100%; height:100%; object-fit:contain; display:block; }
+#stage audio { width:100%; display:block; }
+#script { flex:1; overflow-y:auto; padding:14px 16px 55vh;
+  -webkit-overflow-scrolling:touch; }
+.seg { padding:9px 11px; border-radius:9px; margin-bottom:2px;
+  border-left:3px solid transparent; }
+.seg.cur { background:#1e1e16; border-left-color:var(--accent); }
+.seg .txt { font-size:19px; line-height:1.85; }
+.seg .tr { font-size:14px; color:var(--dim); font-style:italic;
+  margin-top:5px; display:none; }
+body.showtr .seg .tr, .seg.peek .tr { display:block; }
+.w { border-radius:3px; padding:1px 0; }
+.w.s-new { background:var(--new); box-shadow:inset 0 -2px 0 var(--new-b); }
+.w.s-learning { background:var(--learn); box-shadow:inset 0 -2px 0 var(--learn-b); }
+.w.on { background:var(--accent); color:#14140f; }
+.ph { border-bottom:1px dashed var(--accent); }
+
+/* ---- controls ---- */
+#ctl {
+  display:flex; gap:6px; padding:8px 12px calc(var(--bot) + 8px);
+  background:var(--panel); border-top:1px solid var(--line); flex-shrink:0;
+}
+#ctl button {
+  flex:1; padding:11px 0; border-radius:9px; background:#262620;
+  border:1px solid var(--line); font-size:13px;
+}
+#ctl button.on { background:var(--accent); color:#14140f; border-color:var(--accent); }
+
+/* ---- sheet ---- */
+#sheet {
+  position:fixed; left:0; right:0; bottom:0; z-index:50;
+  background:#23231b; border-top:1px solid #3d3d31;
+  border-radius:16px 16px 0 0; padding:16px 18px calc(var(--bot) + 18px);
+  transform:translateY(110%); transition:transform .18s ease;
+  max-height:70vh; overflow-y:auto;
+}
+#sheet.up { transform:translateY(0); }
+#sheet .hw { font-size:22px; font-weight:600; }
+#sheet .lm { font-size:13px; color:var(--dim); margin-bottom:9px; }
+#sheet .gl { font-size:17px; margin-bottom:7px; }
+#sheet .ov { font-size:14px; color:var(--accent); margin-bottom:6px; }
+#sheet .nt { font-size:13px; color:var(--dim); border-left:2px solid #4a4a3e;
+  padding-left:9px; margin-bottom:9px; }
+#sheet .row { display:flex; gap:6px; margin-top:12px; }
+#sheet .row button {
+  flex:1; padding:11px 0; border:1px solid var(--line);
+  border-radius:9px; background:#2c2c23; font-size:13px;
+}
+#sheet .row button.on { background:var(--accent); color:#14140f; border-color:var(--accent); }
+#scrim { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:49; display:none; }
+#scrim.up { display:block; }
+
+#toast {
+  position:fixed; left:50%; bottom:calc(var(--bot) + 80px); transform:translateX(-50%);
+  background:#2c2c23; border:1px solid var(--line); border-radius:9px;
+  padding:10px 16px; font-size:14px; z-index:60; opacity:0;
+  transition:opacity .2s; pointer-events:none; max-width:80%;
+}
+#toast.up { opacity:1; }
+</style>
+</head>
+<body class="showtr">
+
+<div id="bar">
+  <button id="back" class="hidden">‹</button>
+  <span id="title">Lingua</span>
+  <span id="stat"></span>
+  <span class="sp"></span>
+  <button id="size" class="hidden">▢</button>
+  <button id="menu">•••</button>
+</div>
+
+<div id="library">
+  <div id="list"></div>
+  <div id="empty">
+    <p><strong>No lessons yet</strong></p>
+    <p>Import a .lpkg file built by the ingest pipeline.</p>
+    <button class="big" id="import1">Import lesson</button>
+  </div>
+  <button class="big ghost hidden" id="import2">Import lesson</button>
+</div>
+
+<div id="player" class="hidden">
+  <div id="stage"></div>
+  <div id="script"></div>
+  <div id="ctl">
+    <button id="prev">‹ prev</button>
+    <button id="replay">replay</button>
+    <button id="play">play</button>
+    <button id="peek">E</button>
+    <button id="tr" class="on">EN</button>
+    <button id="next">next ›</button>
+  </div>
+</div>
+
+<input type="file" id="file" accept=".lpkg,.zip" class="hidden" multiple>
+<div id="scrim"></div>
+<div id="sheet"></div>
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
