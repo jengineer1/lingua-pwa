@@ -456,10 +456,45 @@ function showWord(si, ti) {
     });
     updateStat();
     hideSheet();
+    nagIfStale();
   });
 }
 
 /* -------------------------------------------------------------- backup */
+
+/* Backup pressure.
+ *
+ * Vocabulary is the only irreplaceable data here - media can be re-imported
+ * from the PC, but nothing else holds your word status. It is also tiny, a
+ * few KB after years. So the app tracks how much is unsaved and asks.
+ *
+ * The largest real risk is deleting the app from the home screen, which
+ * clears its storage with no warning and no recovery.
+ */
+
+const backupState = () => ({
+  at: +(localStorage.getItem('lingua.backup.at') || 0),
+  count: +(localStorage.getItem('lingua.backup.count') || 0),
+});
+
+async function unsavedCount() {
+  const total = await req(tx('events').count());
+  return Math.max(0, total - backupState().count);
+}
+
+async function markBackedUp() {
+  localStorage.setItem('lingua.backup.at', Date.now());
+  localStorage.setItem('lingua.backup.count', await req(tx('events').count()));
+}
+
+async function nagIfStale() {
+  const n = await unsavedCount();
+  const { at } = backupState();
+  const days = at ? (Date.now() - at) / 864e5 : 999;
+  if (n >= 25 || (n > 0 && days >= 7)) {
+    toast(`${n} changes not backed up — ••• → Export backup`, 5000);
+  }
+}
 
 async function exportBackup() {
   const events = await req(tx('events').getAll());
@@ -474,10 +509,16 @@ async function exportBackup() {
   const name = 'lingua-backup-' + new Date().toISOString().slice(0, 10) + '.json';
   const file = new File([blob], name, { type: 'application/json' });
 
-  // Share sheet on iOS puts it straight into Files or iCloud Drive.
+  // Share sheet on iOS puts it straight into Files or iCloud Drive, which
+  // then syncs to the PC on its own.
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { /* cancelled */ }
+    try {
+      await navigator.share({ files: [file], title: name });
+      await markBackedUp();
+      return;
+    } catch (e) { return; }   // cancelled - do not mark as saved
   }
+  await markBackedUp();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = name; a.click();
@@ -507,14 +548,23 @@ async function importBackup(file) {
 
 /* ---------------------------------------------------------------- menu */
 
-function showMenu() {
+async function showMenu() {
   const lang = S.man ? S.man.language : 'es';
   const known = Object.entries(S.vocab)
     .filter(([k, v]) => k.startsWith(lang + ':') && v === 'known').length;
   const total = Math.round(Object.values(S.studied).reduce((a, b) => a + b, 0) / 60);
+
+  const n = await unsavedCount();
+  const { at } = backupState();
+  const when = at ? new Date(at).toLocaleDateString() : 'never';
+  const warn = n > 0
+    ? `<div class="ov">${n} change${n === 1 ? '' : 's'} not backed up · last backup ${when}</div>`
+    : `<div class="lm">All changes backed up · ${when}</div>`;
+
   showSheet(`
     <div class="hw">Lingua</div>
     <div class="lm">${known} words known · ${total} minutes studied</div>
+    ${warn}
     <div class="row" style="flex-direction:column">
       <button data-act="practice">Practice / translate</button>
       <button data-act="settings">Settings</button>
@@ -538,10 +588,7 @@ function showMenu() {
         const ok = await navigator.storage.persist();
         toast(ok ? 'Storage is now persistent' : 'Request declined by the browser');
       } else toast('Not supported here');
-    } else if (a === 'usage') {
-      const e = await navigator.storage.estimate();
-      toast(`${(e.usage / 1e6).toFixed(0)} MB used of ${(e.quota / 1e9).toFixed(1)} GB`);
-    }
+    } else if (a === 'usage') showStorage();
   });
 }
 
@@ -582,7 +629,7 @@ $('file').addEventListener('change', async e => {
 });
 
 $('import1').onclick = $('import2').onclick = () => { S.expect = 'lesson'; $('file').click(); };
-$('menu').onclick = showMenu;
+$('menu').onclick = () => showMenu();
 $('back').onclick = closeLesson;
 $('scrim').onclick = hideSheet;
 
@@ -628,6 +675,7 @@ document.addEventListener('keydown', e => {
   db = await openDB();
   await replayEvents();
   await loadLibrary();
+  setTimeout(nagIfStale, 2500);
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -814,6 +862,47 @@ async function runPractice(mode) {
     out.textContent = await callAPI(mode === 'say' ? say : fix,
       [{ role: 'user', content: text }], 900);
   } catch (e) { out.textContent = e.message; }
+}
+
+/* ---- storage report ---- */
+/* Safari fuzzes or zeroes navigator.storage.estimate().usage, since exact
+   figures are a fingerprinting vector. Summing the stored blobs gives the
+   real answer, so we show both and let the measured number lead. */
+
+async function showStorage() {
+  busy('Storage');
+  const media = await req(tx('media').getAll());
+  const bytes = media.reduce((a, m) => a + (m.blob ? m.blob.size : 0), 0);
+
+  let quota = 0, reported = 0, persisted = false;
+  if (navigator.storage) {
+    if (navigator.storage.estimate) {
+      const e = await navigator.storage.estimate();
+      quota = e.quota || 0; reported = e.usage || 0;
+    }
+    if (navigator.storage.persisted) {
+      persisted = await navigator.storage.persisted().catch(() => false);
+    }
+  }
+
+  const rows = media.length
+    ? (await req(tx('lessons').getAll())).map(r => {
+        const m = media.find(x => x.id === r.man.id);
+        return `<div class="lm">${esc(r.man.title)} — `
+             + `${m ? (m.blob.size / 1e6).toFixed(1) : '?'} MB</div>`;
+      }).join('')
+    : '<div class="lm">No lessons stored</div>';
+
+  showSheet(`
+    <div class="hw">${(bytes / 1e6).toFixed(0)} MB stored</div>
+    <div class="lm">${media.length} lesson${media.length === 1 ? '' : 's'} ·
+      ${quota ? (quota / 1e9).toFixed(1) + ' GB available' : 'quota unknown'}</div>
+    <div class="nt">Eviction protection: ${persisted ? 'on' : 'OFF — data may be cleared'}
+      ${reported === 0 && bytes > 0 ? '<br>Safari reports 0 MB used; that is a known quirk, not a problem.' : ''}
+    </div>
+    ${rows}
+    <div class="row"><button id="sheetclose">Close</button></div>`);
+  $('sheetclose').onclick = hideSheet;
 }
 
 /* ---- settings ---- */
