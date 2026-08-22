@@ -969,20 +969,30 @@ function showSettings() {
     box.innerHTML = '<div class="lm">Loading…</div>';
     try {
       const vs = await loadVoices();
+      const free = vs.filter(v => v.free), paid = vs.filter(v => !v.free);
+      const opt = v => `<option value="${esc(v.id)}"`
+        + `${v.id === getVoice() ? ' selected' : ''}>${esc(v.name)}</option>`;
+
       box.innerHTML = `<select id="vsel" style="width:100%;background:#2c2c23;
         color:var(--fg);border:1px solid var(--line);border-radius:9px;
         padding:11px;font:inherit;font-size:16px;margin:6px 0">`
-        + vs.map(v => `<option value="${esc(v.id)}"${v.id === getVoice() ? ' selected' : ''}>`
-                    + `${esc(v.name)}${v.free ? '' : '  (needs paid plan)'}</option>`).join('')
+        + (free.length ? `<optgroup label="Works on any plan (${free.length})">`
+                       + free.map(opt).join('') + `</optgroup>` : '')
+        + (paid.length ? `<optgroup label="Voice Library — needs a paid plan (${paid.length})">`
+                       + paid.map(opt).join('') + `</optgroup>` : '')
         + `</select>`
-        + `<div class="lm">Voices marked "needs paid plan" are Voice Library `
-        + `voices, which the free tier cannot use through the API.</div>`;
+        + `<div class="row"><button id="vtest">Test this voice</button></div>`
+        + `<div class="lm">Library voices play on the ElevenLabs website but are `
+        + `blocked through the API on the free plan.</div>`;
+
       $('vsel').onchange = () => {
         const o = $('vsel').selectedOptions[0];
         localStorage.setItem('lingua.tts.voice', o.value);
         localStorage.setItem('lingua.tts.name', o.textContent);
         $('vname').textContent = o.textContent;
       };
+      $('vtest').onclick = e =>
+        speak('Hoy vamos a pedir algo de comer. ¿Qué se te antoja?', e.target);
       if (!getVoice() && vs.length) $('vsel').onchange();
     } catch (e) { box.innerHTML = `<div class="ov">${esc(e.message)}</div>`; }
   };
@@ -1089,10 +1099,14 @@ async function loadVoices() {
                         { headers: { 'xi-api-key': key } });
   if (!r.ok) throw new Error(r.status === 401 ? 'Key rejected' : `Error ${r.status}`);
   const d = await r.json();
-  return (d.voices || []).map(v => ({
+  const list = (d.voices || []).map(v => ({
     id: v.voice_id,
     name: v.name,
     // 'premade' voices work on every plan; library voices need a paid one.
     free: v.category === 'premade' || v.category === 'generated' || v.category === 'cloned',
+    labels: v.labels || {},
   }));
+  // Usable voices first, so a free account sees what it can actually play.
+  list.sort((a, b) => (b.free - a.free) || a.name.localeCompare(b.name));
+  return list;
 }
