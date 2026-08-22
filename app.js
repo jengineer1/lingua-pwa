@@ -17,7 +17,7 @@
 'use strict';
 
 const DB_NAME = 'lingua';
-const DB_VER = 1;
+const DB_VER = 2;
 const DEVICE = (() => {
   let d = localStorage.getItem('lingua.device');
   if (!d) { d = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('lingua.device', d); }
@@ -80,11 +80,17 @@ function openDB() {
   return new Promise((res, rej) => {
     const r = indexedDB.open(DB_NAME, DB_VER);
     r.onupgradeneeded = () => {
-      const db = r.result;
-      db.createObjectStore('lessons', { keyPath: 'id' });
-      db.createObjectStore('media', { keyPath: 'id' });
-      const ev = db.createObjectStore('events', { keyPath: 'seq', autoIncrement: true });
-      ev.createIndex('ts', 'ts');
+      const d = r.result;
+      const names = d.objectStoreNames;
+      if (!names.contains('lessons')) d.createObjectStore('lessons', { keyPath: 'id' });
+      if (!names.contains('media')) d.createObjectStore('media', { keyPath: 'id' });
+      if (!names.contains('events')) {
+        d.createObjectStore('events', { keyPath: 'seq', autoIncrement: true })
+          .createIndex('ts', 'ts');
+      }
+      // Generated speech is cached by text+voice: the same phrase is replayed
+      // constantly, and a cache hit costs nothing and works offline.
+      if (!names.contains('tts')) d.createObjectStore('tts', { keyPath: 'k' });
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -847,20 +853,46 @@ async function runPractice(mode) {
   if (!text) return;
   const out = $('pout');
   out.textContent = 'Thinking…';
+
+  // JSON rather than prose, so the Spanish line can be pulled out cleanly
+  // and handed to the speech button.
   const say =
     `You turn English into natural Spanish.\n\n${regionLine()}\n\n`
-    + `Give the Spanish a native speaker would actually say, then a back-translation `
-    + `so the meaning can be checked, then one or two lines on anything worth `
-    + `noticing. Skip the third part if there is nothing to say. Plain text, no markdown.`;
+    + `Return JSON only, no fences:\n`
+    + `{"spanish":"...","back":"...","note":"..."}\n\n`
+    + `spanish: what a native speaker would actually say, not a literal rendering.\n`
+    + `back: an English back-translation of your Spanish, so the meaning can be checked.\n`
+    + `note: one or two lines on anything worth noticing - a word choice that differs `
+    + `from the obvious one, a structure with no English equivalent, a register choice. `
+    + `Use an empty string when there is nothing genuinely worth saying.`;
   const fix =
     `You correct a learner's Spanish.\n\n${regionLine()}\n\n`
-    + `Give a one-line verdict, then the corrected sentence, then briefly what was `
-    + `off and the rule behind it, naming the error type. If the sentence was already `
-    + `correct, say so and do not invent a change. Do not flag a valid alternative `
-    + `phrasing as an error. Plain text, no markdown.`;
+    + `Return JSON only, no fences:\n`
+    + `{"verdict":"...","corrected":"...","why":""}\n\n`
+    + `verdict: one short line - correct, understandable but unnatural, or wrong.\n`
+    + `corrected: what a native speaker would say. If the original was already fine, `
+    + `repeat it unchanged rather than inventing a change.\n`
+    + `why: what was off and the rule behind it, naming the error type (gender `
+    + `agreement, wrong preposition, ser/estar, false friend). Empty string if correct. `
+    + `Do not flag a merely different valid phrasing as an error.`;
+
   try {
-    out.textContent = await callAPI(mode === 'say' ? say : fix,
+    const raw = await callAPI(mode === 'say' ? say : fix,
       [{ role: 'user', content: text }], 900);
+    let d;
+    try {
+      d = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
+    } catch (e) { out.textContent = raw; return; }
+
+    const spanish = mode === 'say' ? d.spanish : d.corrected;
+    let h = '';
+    if (mode === 'fix' && d.verdict) h += `<div class="lm">${esc(d.verdict)}</div>`;
+    h += `<div class="gl" style="display:flex;align-items:center;flex-wrap:wrap">`
+       + `<span>${esc(spanish || '')}</span>${spanish ? speakBtn(spanish) : ''}</div>`;
+    if (mode === 'say' && d.back) h += `<div class="lm">${esc(d.back)}</div>`;
+    const note = mode === 'say' ? d.note : d.why;
+    if (note) h += `<div class="nt" style="white-space:pre-wrap">${esc(note)}</div>`;
+    out.innerHTML = h;
   } catch (e) { out.textContent = e.message; }
 }
 
@@ -919,12 +951,130 @@ function showSettings() {
              border-radius:9px;padding:11px;font:inherit;font-size:16px">
     <div class="lm" style="margin-top:6px">Variety used when writing Spanish for you.
       Material you read is still explained in the speaker's own variety.</div>
-    <div class="row"><button id="ksave">Save</button></div>`);
+
+    <div class="hw" style="margin-top:18px;font-size:17px">Speech</div>
+    <input id="tk" type="password" placeholder="ElevenLabs key" value="${esc(getTtsKey())}"
+      style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
+             border-radius:9px;padding:11px;font:inherit;font-size:16px;margin-bottom:8px">
+    <div class="lm">Voice: <span id="vname">${esc(getVoiceName())}</span></div>
+    <div id="vlist"></div>
+    <div class="row">
+      <button id="vload">Load voices</button>
+      <button id="ksave">Save</button>
+    </div>`);
+
+  $('vload').onclick = async () => {
+    localStorage.setItem('lingua.tts.key', $('tk').value.trim());
+    const box = $('vlist');
+    box.innerHTML = '<div class="lm">Loading…</div>';
+    try {
+      const vs = await loadVoices();
+      box.innerHTML = `<select id="vsel" style="width:100%;background:#2c2c23;
+        color:var(--fg);border:1px solid var(--line);border-radius:9px;
+        padding:11px;font:inherit;font-size:16px;margin:6px 0">`
+        + vs.map(v => `<option value="${esc(v.id)}"${v.id === getVoice() ? ' selected' : ''}>`
+                    + `${esc(v.name)}</option>`).join('')
+        + `</select>`;
+      $('vsel').onchange = () => {
+        const o = $('vsel').selectedOptions[0];
+        localStorage.setItem('lingua.tts.voice', o.value);
+        localStorage.setItem('lingua.tts.name', o.textContent);
+        $('vname').textContent = o.textContent;
+      };
+      if (!getVoice() && vs.length) $('vsel').onchange();
+    } catch (e) { box.innerHTML = `<div class="ov">${esc(e.message)}</div>`; }
+  };
+
   $('ksave').onclick = () => {
     setKey($('k').value);
     localStorage.setItem('lingua.region', $('rg').value.trim() || 'Mexican');
+    localStorage.setItem('lingua.tts.key', $('tk').value.trim());
     hideSheet(); toast('Saved');
   };
 }
 
 $('ask').onclick = showAsk;
+
+/* =====================================================================
+ * Speech playback via ElevenLabs.
+ *
+ * Audio is cached in IndexedDB keyed by text + voice, so replaying a
+ * phrase you have heard before is instant, free, and works offline.
+ * ===================================================================== */
+
+const TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech/';
+const TTS_MODEL = 'eleven_multilingual_v2';
+
+const getTtsKey = () => localStorage.getItem('lingua.tts.key') || '';
+const getVoice = () => localStorage.getItem('lingua.tts.voice') || '';
+const getVoiceName = () => localStorage.getItem('lingua.tts.name') || 'none selected';
+
+async function hashKey(text, voice) {
+  const buf = new TextEncoder().encode(voice + '|' + text);
+  const d = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(d)].slice(0, 12)
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function speak(text, btn) {
+  const key = getTtsKey(), voice = getVoice();
+  if (!key || !voice) { toast('Set an ElevenLabs key and voice in Settings', 4000); return; }
+
+  const k = await hashKey(text, voice);
+  let hit = null;
+  try { hit = await req(tx('tts').get(k)); } catch (e) { /* store may be new */ }
+
+  if (!hit) {
+    if (btn) btn.textContent = '…';
+    try {
+      const r = await fetch(TTS_URL + voice, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'xi-api-key': key },
+        body: JSON.stringify({
+          text,
+          model_id: TTS_MODEL,
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+      });
+      if (!r.ok) throw new Error(r.status === 401 ? 'ElevenLabs key rejected'
+                                                 : `TTS error ${r.status}`);
+      const blob = await r.blob();
+      await req(tx('tts', 'readwrite').put({ k, blob }));
+      hit = { k, blob };
+    } catch (e) {
+      if (btn) btn.textContent = '▶';
+      toast(e.message, 4000);
+      return;
+    }
+  }
+
+  if (btn) btn.textContent = '▶';
+  const url = URL.createObjectURL(hit.blob);
+  const a = new Audio(url);
+  a.onended = () => URL.revokeObjectURL(url);
+  a.play().catch(() => toast('Could not play audio'));
+}
+
+/* Delegated so buttons rendered into the sheet after the fact still work. */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-speak]');
+  if (b) speak(b.dataset.speak, b);
+});
+
+function speakBtn(text) {
+  return `<button data-speak="${esc(text)}"
+    style="border:1px solid var(--line);background:#2c2c23;border-radius:8px;
+           padding:6px 13px;margin-left:8px;font-size:15px">▶</button>`;
+}
+
+/* ---- voice picker ---- */
+
+async function loadVoices() {
+  const key = getTtsKey();
+  if (!key) throw new Error('Enter your ElevenLabs key first');
+  const r = await fetch('https://api.elevenlabs.io/v2/voices?page_size=100',
+                        { headers: { 'xi-api-key': key } });
+  if (!r.ok) throw new Error(r.status === 401 ? 'Key rejected' : `Error ${r.status}`);
+  const d = await r.json();
+  return (d.voices || []).map(v => ({ id: v.voice_id, name: v.name }));
+}
