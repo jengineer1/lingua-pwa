@@ -20,7 +20,10 @@
   --bot: env(safe-area-inset-bottom);
 }
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-html,body { margin:0; height:100%; overflow:hidden; overscroll-behavior:none; }
+html,body {
+  margin:0; height:100dvh; overflow:hidden; overscroll-behavior:none;
+  position:fixed; inset:0;
+}
 body {
   background:var(--bg); color:var(--fg);
   font:16px/1.6 -apple-system,system-ui,sans-serif;
@@ -71,17 +74,19 @@ button { font:inherit; color:inherit; background:none; border:none; cursor:point
 
 /* ---- player ---- */
 #player { flex:1; display:flex; flex-direction:column; min-height:0; }
+/* Flex percentages, not vh: on iOS in standalone mode vh does not match
+   the visible area, which pushed the control bar below the fold. */
 #stage {
-  background:#000; flex:0 0 auto; height:38vh; position:relative;
-  transition:height .18s ease; overflow:hidden;
+  background:#000; flex:0 0 38%; position:relative;
+  transition:flex-basis .18s ease; overflow:hidden;
 }
-#stage.audio { background:var(--panel); height:auto; padding:12px; }
-#stage.big { height:60vh; }
-#stage.off { height:0; }
+#stage.audio { background:var(--panel); flex:0 0 auto; padding:12px; }
+#stage.big { flex-basis:62%; }
+#stage.off { flex-basis:0; }
 #stage video { width:100%; height:100%; object-fit:contain; display:block; }
 #stage audio { width:100%; display:block; }
-#script { flex:1; overflow-y:auto; padding:14px 16px 55vh;
-  -webkit-overflow-scrolling:touch; }
+#script { flex:1 1 auto; min-height:0; overflow-y:auto;
+  padding:14px 16px 60%; -webkit-overflow-scrolling:touch; }
 .seg { padding:9px 11px; border-radius:9px; margin-bottom:2px;
   border-left:3px solid transparent; }
 .seg.cur { background:#1e1e16; border-left-color:var(--accent); }
@@ -97,12 +102,13 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
 
 /* ---- controls ---- */
 #ctl {
-  display:flex; gap:6px; padding:8px 12px calc(var(--bot) + 8px);
-  background:var(--panel); border-top:1px solid var(--line); flex-shrink:0;
+  display:flex; gap:5px; padding:8px 10px calc(var(--bot) + 8px);
+  background:var(--panel); border-top:1px solid var(--line);
+  flex:0 0 auto;
 }
 #ctl button {
-  flex:1; padding:11px 0; border-radius:9px; background:#262620;
-  border:1px solid var(--line); font-size:13px;
+  flex:1; padding:12px 0; border-radius:9px; background:#262620;
+  border:1px solid var(--line); font-size:12px; min-width:0;
 }
 #ctl button.on { background:var(--accent); color:#14140f; border-color:var(--accent); }
 
@@ -142,7 +148,7 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
 <body class="showtr">
 
 <div id="bar">
-  <button id="back" class="hidden">‹</button>
+  <button id="back" class="hidden">‹ Library</button>
   <span id="title">Lingua</span>
   <span id="stat"></span>
   <span class="sp"></span>
@@ -164,12 +170,13 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
   <div id="stage"></div>
   <div id="script"></div>
   <div id="ctl">
-    <button id="prev">‹ prev</button>
-    <button id="replay">replay</button>
-    <button id="play">play</button>
-    <button id="peek">E</button>
+    <button id="prev">‹</button>
+    <button id="replay">↻</button>
+    <button id="play">▶</button>
+    <button id="next">›</button>
+    <button id="peek">EN·1</button>
     <button id="tr" class="on">EN</button>
-    <button id="next">next ›</button>
+    <button id="ask">Ask</button>
   </div>
 </div>
 

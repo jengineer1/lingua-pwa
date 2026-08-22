@@ -444,7 +444,9 @@ function showWord(si, ti) {
     h += '<div class="row">' + ['new', 'learning', 'known', 'ignore'].map(k =>
       `<button data-set="${k}" class="${st === k ? 'on' : ''}">${k}</button>`).join('') + '</div>';
   }
+  h += `<div class="row"><button id="explain">Explain in context</button></div>`;
   showSheet(h);
+  $('explain').onclick = () => explainWord(si, ti);
 
   $('sheet').querySelectorAll('[data-set]').forEach(b => b.onclick = async () => {
     await emit('status', { key: S.man.language + ':' + lemma, value: b.dataset.set });
@@ -514,6 +516,8 @@ function showMenu() {
     <div class="hw">Lingua</div>
     <div class="lm">${known} words known · ${total} minutes studied</div>
     <div class="row" style="flex-direction:column">
+      <button data-act="practice">Practice / translate</button>
+      <button data-act="settings">Settings</button>
       <button data-act="import">Import lesson (.lpkg)</button>
       <button data-act="export">Export backup</button>
       <button data-act="restore">Restore from backup</button>
@@ -524,7 +528,9 @@ function showMenu() {
   $('sheet').querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
     hideSheet();
     const a = b.dataset.act;
-    if (a === 'import') { S.expect = 'lesson'; $('file').click(); }
+    if (a === 'practice') showPractice();
+    else if (a === 'settings') showSettings();
+    else if (a === 'import') { S.expect = 'lesson'; $('file').click(); }
     else if (a === 'export') exportBackup();
     else if (a === 'restore') { S.expect = 'backup'; $('file').click(); }
     else if (a === 'persist') {
@@ -594,7 +600,11 @@ $('size').onclick = () => {
 $('prev').onclick = () => goSeg(-1);
 $('next').onclick = () => goSeg(1);
 $('replay').onclick = () => { if (S.curSeg >= 0) seek(S.segs[S.curSeg].start); };
-$('play').onclick = () => { if (S.media) S.media.paused ? S.media.play() : S.media.pause(); };
+$('play').onclick = () => {
+  if (!S.media) return;
+  if (S.media.paused) { S.media.play(); $('play').textContent = '❚❚'; }
+  else { S.media.pause(); $('play').textContent = '▶'; }
+};
 $('peek').onclick = () => { if (S.curSeg >= 0) $('g' + S.curSeg).classList.toggle('peek'); };
 $('tr').onclick = function () {
   document.body.classList.toggle('showtr');
@@ -628,3 +638,195 @@ document.addEventListener('keydown', e => {
     navigator.storage.persist().catch(() => {});
   }
 })();
+
+/* =====================================================================
+ * Runtime API features: contextual explanation, chat, and production
+ * practice. These are the only parts that need a network connection.
+ *
+ * The key is kept in localStorage. That is acceptable for a personal app
+ * on your own device and would not be for anything shared. Anthropic's
+ * API requires an explicit opt-in header for browser calls, below.
+ * ===================================================================== */
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_MODEL = 'claude-sonnet-4-5';
+
+const getKey = () => localStorage.getItem('lingua.key') || '';
+const setKey = k => localStorage.setItem('lingua.key', k.trim());
+const getRegion = () => localStorage.getItem('lingua.region') || 'Colombian';
+
+async function callAPI(system, messages, maxTokens = 1200) {
+  const key = getKey();
+  if (!key) throw new Error('No API key set. Add one in ••• → Settings.');
+  const r = await fetch(API_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({ model: API_MODEL, max_tokens: maxTokens, system, messages }),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(r.status === 401 ? 'API key rejected' : `API error ${r.status}: ${t.slice(0, 120)}`);
+  }
+  const d = await r.json();
+  return d.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+}
+
+function regionLine() {
+  return `The learner studies ${getRegion()} Spanish. Prefer the vocabulary, `
+       + `register and forms actually used there, and say so when a usage is regional.`;
+}
+
+/* Window of sentences around the current one. Small on purpose: a few
+   hundred tokens rather than a whole transcript. */
+function contextWindow(back = 3, fwd = 2) {
+  if (S.curSeg < 0) return '';
+  const lo = Math.max(0, S.curSeg - back);
+  const hi = Math.min(S.segs.length, S.curSeg + fwd + 1);
+  return S.segs.slice(lo, hi).map(s =>
+    (s.id === S.curSeg ? '>> ' : '   ') + s.text).join('\n');
+}
+
+function busy(label) {
+  showSheet(`<div class="hw">${esc(label)}</div><div class="lm">Working…</div>`);
+}
+
+/* ---- explain a word in its actual context ---- */
+
+async function explainWord(si, ti) {
+  const s = S.segs[si], t = s.tokens[ti];
+  busy(t.surface);
+  try {
+    const out = await callAPI(
+      `You explain a word to an English speaker reading Spanish.\n\n${regionLine()}\n\n`
+      + `Answer in three short parts: what the word means here, what it means `
+      + `generally if that differs, and any grammar that makes this sentence work. `
+      + `Be brief. Plain text, no markdown.`,
+      [{ role: 'user', content:
+        `Sentence: ${s.text}\nTranslation: ${s.translation || '(none)'}\n`
+        + `Word: ${t.surface}${t.lemma ? ` (lemma ${t.lemma})` : ''}` }],
+      700);
+    showSheet(`<div class="hw">${esc(t.surface)}</div>`
+      + `<div class="gl" style="white-space:pre-wrap">${esc(out)}</div>`
+      + `<div class="row"><button id="sheetclose">Close</button></div>`);
+    $('sheetclose').onclick = hideSheet;
+  } catch (e) { hideSheet(); toast(e.message, 5000); }
+}
+
+/* ---- ask about what is happening now ---- */
+
+let chatLog = [];
+
+function showAsk() {
+  const ctx = contextWindow();
+  showSheet(`
+    <div class="hw">Ask</div>
+    <div class="lm">${S.curSeg >= 0 ? 'About sentence ' + S.curSeg : 'No sentence playing'}</div>
+    ${ctx ? `<div class="nt" style="white-space:pre-wrap">${esc(ctx)}</div>` : ''}
+    <textarea id="q" rows="3" placeholder="What does she mean here?"
+      style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
+             border-radius:9px;padding:10px;font:inherit;font-size:16px"></textarea>
+    <div class="row">
+      <button id="qsend">Ask</button>
+      <button id="qfull">Ask about the whole lesson</button>
+    </div>
+    <div id="qout" style="white-space:pre-wrap;margin-top:12px"></div>`);
+  $('q').focus();
+  $('qsend').onclick = () => runAsk(false);
+  $('qfull').onclick = () => runAsk(true);
+}
+
+async function runAsk(full) {
+  const q = $('q').value.trim();
+  if (!q) return;
+  const out = $('qout');
+  out.textContent = 'Thinking…';
+  try {
+    const ctx = full
+      ? S.segs.map(s => `(${s.id}) ${s.text}`).join('\n')
+      : contextWindow();
+    const text = await callAPI(
+      `You help an English speaker studying Spanish through real material.\n\n`
+      + `${regionLine()}\n\n`
+      + `You may be shown an excerpt of what they are reading. Use it when the `
+      + `question refers to it and ignore it otherwise. Answer the question asked, `
+      + `briefly. Do not turn every answer into a grammar lesson. Plain text, no markdown.`,
+      chatLog.concat([{ role: 'user', content:
+        ctx ? `Currently reading:\n${ctx}\n\nQuestion: ${q}` : q }]),
+      1200);
+    chatLog = chatLog.concat([
+      { role: 'user', content: q },
+      { role: 'assistant', content: text },
+    ]).slice(-8);   // keep the last few turns so cost stays flat
+    out.textContent = text;
+    $('q').value = '';
+  } catch (e) { out.textContent = e.message; }
+}
+
+/* ---- say / fix ---- */
+
+function showPractice() {
+  showSheet(`
+    <div class="hw">Practice</div>
+    <div class="lm">Type English to translate, or Spanish to be corrected</div>
+    <textarea id="p" rows="3" placeholder="Could I get the check?"
+      style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
+             border-radius:9px;padding:10px;font:inherit;font-size:16px"></textarea>
+    <div class="row">
+      <button id="psay">→ Spanish</button>
+      <button id="pfix">Check my Spanish</button>
+    </div>
+    <div id="pout" style="white-space:pre-wrap;margin-top:12px"></div>`);
+  $('p').focus();
+  $('psay').onclick = () => runPractice('say');
+  $('pfix').onclick = () => runPractice('fix');
+}
+
+async function runPractice(mode) {
+  const text = $('p').value.trim();
+  if (!text) return;
+  const out = $('pout');
+  out.textContent = 'Thinking…';
+  const say =
+    `You turn English into natural Spanish.\n\n${regionLine()}\n\n`
+    + `Give the Spanish a native speaker would actually say, then a back-translation `
+    + `so the meaning can be checked, then one or two lines on anything worth `
+    + `noticing. Skip the third part if there is nothing to say. Plain text, no markdown.`;
+  const fix =
+    `You correct a learner's Spanish.\n\n${regionLine()}\n\n`
+    + `Give a one-line verdict, then the corrected sentence, then briefly what was `
+    + `off and the rule behind it, naming the error type. If the sentence was already `
+    + `correct, say so and do not invent a change. Do not flag a valid alternative `
+    + `phrasing as an error. Plain text, no markdown.`;
+  try {
+    out.textContent = await callAPI(mode === 'say' ? say : fix,
+      [{ role: 'user', content: text }], 900);
+  } catch (e) { out.textContent = e.message; }
+}
+
+/* ---- settings ---- */
+
+function showSettings() {
+  showSheet(`
+    <div class="hw">Settings</div>
+    <div class="lm">The key is stored on this device only</div>
+    <input id="k" type="password" placeholder="sk-ant-..." value="${esc(getKey())}"
+      style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
+             border-radius:9px;padding:11px;font:inherit;font-size:16px;margin-bottom:8px">
+    <input id="rg" placeholder="Colombian" value="${esc(getRegion())}"
+      style="width:100%;background:#2c2c23;color:var(--fg);border:1px solid var(--line);
+             border-radius:9px;padding:11px;font:inherit;font-size:16px">
+    <div class="lm" style="margin-top:6px">Regional variety used in answers</div>
+    <div class="row"><button id="ksave">Save</button></div>`);
+  $('ksave').onclick = () => {
+    setKey($('k').value);
+    localStorage.setItem('lingua.region', $('rg').value.trim() || 'Colombian');
+    hideSheet(); toast('Saved');
+  };
+}
+
+$('ask').onclick = showAsk;
