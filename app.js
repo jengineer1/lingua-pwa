@@ -973,8 +973,10 @@ function showSettings() {
         color:var(--fg);border:1px solid var(--line);border-radius:9px;
         padding:11px;font:inherit;font-size:16px;margin:6px 0">`
         + vs.map(v => `<option value="${esc(v.id)}"${v.id === getVoice() ? ' selected' : ''}>`
-                    + `${esc(v.name)}</option>`).join('')
-        + `</select>`;
+                    + `${esc(v.name)}${v.free ? '' : '  (needs paid plan)'}</option>`).join('')
+        + `</select>`
+        + `<div class="lm">Voices marked "needs paid plan" are Voice Library `
+        + `voices, which the free tier cannot use through the API.</div>`;
       $('vsel').onchange = () => {
         const o = $('vsel').selectedOptions[0];
         localStorage.setItem('lingua.tts.voice', o.value);
@@ -1036,8 +1038,19 @@ async function speak(text, btn) {
           voice_settings: { stability: 0.5, similarity_boost: 0.75 },
         }),
       });
-      if (!r.ok) throw new Error(r.status === 401 ? 'ElevenLabs key rejected'
-                                                 : `TTS error ${r.status}`);
+      if (!r.ok) {
+        let msg = `TTS error ${r.status}`;
+        if (r.status === 401) msg = 'ElevenLabs key rejected';
+        else if (r.status === 402) {
+          // Free accounts cannot use community Voice Library voices through
+          // the API, even though the same voice works on the ElevenLabs site.
+          const body = await r.text().catch(() => '');
+          msg = /library voices/i.test(body)
+            ? 'Free plan cannot use Voice Library voices via API. Pick a premade voice, or upgrade.'
+            : 'ElevenLabs quota exhausted for this month.';
+        }
+        throw new Error(msg);
+      }
       const blob = await r.blob();
       await req(tx('tts', 'readwrite').put({ k, blob }));
       hit = { k, blob };
@@ -1076,5 +1089,10 @@ async function loadVoices() {
                         { headers: { 'xi-api-key': key } });
   if (!r.ok) throw new Error(r.status === 401 ? 'Key rejected' : `Error ${r.status}`);
   const d = await r.json();
-  return (d.voices || []).map(v => ({ id: v.voice_id, name: v.name }));
+  return (d.voices || []).map(v => ({
+    id: v.voice_id,
+    name: v.name,
+    // 'premade' voices work on every plan; library voices need a paid one.
+    free: v.category === 'premade' || v.category === 'generated' || v.category === 'cloned',
+  }));
 }
