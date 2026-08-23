@@ -260,7 +260,8 @@ async function openLesson(id) {
   const stage = $('stage');
   stage.classList.toggle('audio', row.man.kind === 'audio');
   const tag = row.man.kind === 'audio' ? 'audio' : 'video';
-  stage.innerHTML = `<${tag} id="v" controls playsinline preload="metadata"></${tag}>`;
+  stage.innerHTML = `<${tag} id="v" controls playsinline preload="metadata"></${tag}>`
+    + `<div id="cap" class="${localStorage.getItem('lingua.cc') === '0' ? 'off' : ''}"></div>`;
   S.media = $('v');
   S.media.src = URL.createObjectURL(m.blob);
 
@@ -272,6 +273,8 @@ async function openLesson(id) {
   $('player').classList.remove('hidden');
   $('back').classList.remove('hidden');
   $('size').classList.toggle('hidden', row.man.kind === 'audio');
+  $('cc').classList.toggle('hidden', row.man.kind === 'audio');
+  $('cc').classList.toggle('on', localStorage.getItem('lingua.cc') !== '0');
   updateStat();
 
   S.media.addEventListener('play', startClock);
@@ -330,6 +333,26 @@ function renderScript() {
   $('script').innerHTML = html;
 }
 
+/* One sentence, drawn over the video. Shares the token markup with the
+   transcript so highlighting and word status stay in step automatically. */
+function renderCaption(si) {
+  const cap = $('cap');
+  if (!cap) return;
+  if (si < 0) { cap.innerHTML = ''; return; }
+  const s = S.segs[si];
+  let out = '', cur = 0;
+  s.tokens.forEach((t, ti) => {
+    if (t.start_char > cur) out += esc(s.text.slice(cur, t.start_char));
+    out += `<span class="w s-${statusOf(t.lemma)}" data-si="${si}" data-ti="${ti}">`
+         + `${esc(s.text.slice(t.start_char, t.end_char))}</span>`;
+    cur = t.end_char;
+  });
+  if (cur < s.text.length) out += esc(s.text.slice(cur));
+  cap.classList.remove('peek');
+  cap.innerHTML = `<div>${out}</div>`
+    + `<div class="tr">${esc(s.translation || '')}</div>`;
+}
+
 function updateStat() {
   if (!S.doc) return;
   const { total, known } = lessonKnown(S.doc, S.man.language);
@@ -374,6 +397,7 @@ function loop() {
         el.scrollIntoView({ block: 'center', behavior: 'smooth' });
       }
     }
+    renderCaption(si);
     S.curSeg = si;
   }
 
@@ -391,8 +415,8 @@ function loop() {
     document.querySelectorAll('.w.on').forEach(e => e.classList.remove('on'));
     if (idx >= 0) {
       const f = S.flat[idx];
-      const el = document.querySelector(`.w[data-si="${f.si}"][data-ti="${f.ti}"]`);
-      if (el) el.classList.add('on');
+      document.querySelectorAll(`.w[data-si="${f.si}"][data-ti="${f.ti}"]`)
+        .forEach(el => el.classList.add('on'));
     }
     S.curTok = idx;
   }
@@ -462,7 +486,6 @@ function showWord(si, ti) {
     });
     updateStat();
     hideSheet();
-    nagIfStale();
   });
 }
 
@@ -491,15 +514,35 @@ async function unsavedCount() {
 async function markBackedUp() {
   localStorage.setItem('lingua.backup.at', Date.now());
   localStorage.setItem('lingua.backup.count', await req(tx('events').count()));
+  localStorage.setItem('lingua.nag.at', Date.now());
 }
 
+const NAG_DAYS = { never: 0, weekly: 7, monthly: 30, quarterly: 90 };
+const getNagEvery = () => localStorage.getItem('lingua.nag') || 'monthly';
+
+/* Launch only, and at most once per chosen interval.
+ *
+ * The earlier version compared "days since last backup" against a threshold,
+ * which for someone who had never backed up was effectively infinite - so it
+ * fired on every single change. Rate-limiting on when we last NAGGED, rather
+ * than when the user last backed up, is what actually bounds the frequency.
+ */
 async function nagIfStale() {
+  const every = NAG_DAYS[getNagEvery()];
+  if (!every) return;
+
+  const last = +(localStorage.getItem('lingua.nag.at') || 0);
+  if (last && (Date.now() - last) / 864e5 < every) return;
+
   const n = await unsavedCount();
+  if (n === 0) return;
+
   const { at } = backupState();
-  const days = at ? (Date.now() - at) / 864e5 : 999;
-  if (n >= 25 || (n > 0 && days >= 7)) {
-    toast(`${n} changes not backed up — ••• → Export backup`, 5000);
-  }
+  const since = at ? Math.round((Date.now() - at) / 864e5) : null;
+  localStorage.setItem('lingua.nag.at', Date.now());
+  toast(since === null
+    ? `${n} changes have never been backed up — ••• → Export backup`
+    : `${n} changes since your last backup ${since} days ago`, 6000);
 }
 
 async function exportBackup() {
@@ -614,6 +657,14 @@ $('list').addEventListener('click', async e => {
   if (card) openLesson(card.dataset.id);
 });
 
+$('stage').addEventListener('click', e => {
+  const w = e.target.closest('#cap .w');
+  if (!w) return;
+  e.stopPropagation();
+  if (S.media && !S.media.paused) { S.media.pause(); $('play').textContent = '▶'; }
+  showWord(+w.dataset.si, +w.dataset.ti);
+});
+
 $('script').addEventListener('click', e => {
   const w = e.target.closest('.w');
   if (w) { showWord(+w.dataset.si, +w.dataset.ti); return; }
@@ -642,12 +693,15 @@ $('scrim').onclick = hideSheet;
 // Cycle the video pane: normal -> large -> hidden. Hidden is useful for
 // re-listening to something you have already watched, where the transcript
 // is what you want on screen.
+// normal -> big -> cinema -> hidden -> normal
 $('size').onclick = () => {
   const st = $('stage');
   if (st.classList.contains('audio')) return;
-  if (st.classList.contains('big')) { st.classList.remove('big'); st.classList.add('off'); }
-  else if (st.classList.contains('off')) st.classList.remove('off');
-  else st.classList.add('big');
+  const c = st.classList;
+  if (c.contains('big')) { c.remove('big'); c.add('cinema'); }
+  else if (c.contains('cinema')) { c.remove('cinema'); c.add('off'); }
+  else if (c.contains('off')) c.remove('off');
+  else c.add('big');
 };
 
 $('prev').onclick = () => goSeg(-1);
@@ -658,7 +712,12 @@ $('play').onclick = () => {
   if (S.media.paused) { S.media.play(); $('play').textContent = '❚❚'; }
   else { S.media.pause(); $('play').textContent = '▶'; }
 };
-$('peek').onclick = () => { if (S.curSeg >= 0) $('g' + S.curSeg).classList.toggle('peek'); };
+$('peek').onclick = () => {
+  if (S.curSeg < 0) return;
+  $('g' + S.curSeg).classList.toggle('peek');
+  const cap = $('cap');
+  if (cap) cap.classList.toggle('peek');
+};
 $('tr').onclick = function () {
   document.body.classList.toggle('showtr');
   this.classList.toggle('on', document.body.classList.contains('showtr'));
@@ -960,8 +1019,19 @@ function showSettings() {
     <div id="vlist"></div>
     <div class="row">
       <button id="vload">Load voices</button>
-      <button id="ksave">Save</button>
-    </div>`);
+    </div>
+
+    <div class="hw" style="margin-top:18px;font-size:17px">Backup reminder</div>
+    <select id="ng" style="width:100%;background:#2c2c23;color:var(--fg);
+      border:1px solid var(--line);border-radius:9px;padding:11px;
+      font:inherit;font-size:16px">
+      ${['never', 'weekly', 'monthly', 'quarterly'].map(k =>
+        `<option value="${k}"${getNagEvery() === k ? ' selected' : ''}>${k}</option>`).join('')}
+    </select>
+    <div class="lm" style="margin-top:6px">Shown at most once per period, on launch only.
+      Backup status is always visible at the top of this menu.</div>
+
+    <div class="row"><button id="ksave">Save</button></div>`);
 
   $('vload').onclick = async () => {
     localStorage.setItem('lingua.tts.key', $('tk').value.trim());
@@ -1001,11 +1071,20 @@ function showSettings() {
     setKey($('k').value);
     localStorage.setItem('lingua.region', $('rg').value.trim() || 'Mexican');
     localStorage.setItem('lingua.tts.key', $('tk').value.trim());
+    localStorage.setItem('lingua.nag', $('ng').value);
     hideSheet(); toast('Saved');
   };
 }
 
 $('ask').onclick = showAsk;
+
+$('cc').onclick = function () {
+  const cap = $('cap');
+  if (!cap) return;
+  const on = cap.classList.toggle('off') === false;
+  this.classList.toggle('on', on);
+  localStorage.setItem('lingua.cc', on ? '1' : '0');
+};
 
 /* =====================================================================
  * Speech playback via ElevenLabs.
