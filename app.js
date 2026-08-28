@@ -379,11 +379,7 @@ function loop() {
   if (!S.media) return;
   const t = S.media.currentTime;
 
-  let si = -1;
-  for (let i = 0; i < S.segs.length; i++) {
-    const s = S.segs[i];
-    if (s.start != null && t >= s.start - 0.05 && t <= s.end + 0.05) { si = i; break; }
-  }
+  const si = segAt(t);
 
   if (si !== S.curSeg) {
     document.querySelectorAll('.seg.cur').forEach(e => e.classList.remove('cur'));
@@ -431,10 +427,52 @@ function seek(t) {
   S.media.currentTime = t;
   S.media.play().catch(() => {});
 }
+/* Navigation works off the playhead, never off S.curSeg.
+ *
+ * curSeg is the sentence CONTAINING the playhead, and it is -1 whenever
+ * playback sits in a gap between sentences - which in real material is a
+ * lot of the time. Treating -1 as "not started" made prev/next jump to the
+ * beginning of the lesson, and made peek do nothing.
+ */
+
+// The sentence containing t, or -1.
+function segAt(t) {
+  for (let i = 0; i < S.segs.length; i++) {
+    const s = S.segs[i];
+    if (s.start != null && t >= s.start - 0.05 && t <= s.end + 0.05) return i;
+  }
+  return -1;
+}
+
+// The sentence containing t, or failing that the last one that has started.
+// In a gap this is the sentence you just heard, which is what you mean when
+// you reach for a control.
+function segNear(t) {
+  let best = -1;
+  for (let i = 0; i < S.segs.length; i++) {
+    const s = S.segs[i];
+    if (s.start == null) continue;
+    if (s.start <= t + 0.05) best = i; else break;
+  }
+  return best;
+}
+
 function goSeg(d) {
-  let i = S.curSeg < 0 ? 0 : S.curSeg + d;
-  i = Math.max(0, Math.min(S.segs.length - 1, i));
-  seek(S.segs[i].start);
+  if (!S.segs.length) return;
+  const t = S.media ? S.media.currentTime : 0;
+
+  if (d > 0) {
+    const nxt = S.segs.find(s => s.start != null && s.start > t + 0.15);
+    seek(nxt ? nxt.start : S.segs[S.segs.length - 1].start);
+    return;
+  }
+
+  const inside = segAt(t);
+  // Inside a sentence, "back" means the one before it. In a gap, it means
+  // the sentence that just finished.
+  let target = inside >= 0 ? inside - 1 : segNear(t);
+  if (target < 0) target = 0;
+  seek(S.segs[target].start);
 }
 
 /* --------------------------------------------------------------- sheet */
@@ -706,15 +744,22 @@ $('size').onclick = () => {
 
 $('prev').onclick = () => goSeg(-1);
 $('next').onclick = () => goSeg(1);
-$('replay').onclick = () => { if (S.curSeg >= 0) seek(S.segs[S.curSeg].start); };
+$('replay').onclick = () => {
+  const i = S.media ? segNear(S.media.currentTime) : -1;
+  if (i >= 0) seek(S.segs[i].start);
+};
 $('play').onclick = () => {
   if (!S.media) return;
   if (S.media.paused) { S.media.play(); $('play').textContent = '❚❚'; }
   else { S.media.pause(); $('play').textContent = '▶'; }
 };
 $('peek').onclick = () => {
-  if (S.curSeg < 0) return;
-  $('g' + S.curSeg).classList.toggle('peek');
+  const i = S.curSeg >= 0
+    ? S.curSeg
+    : (S.media ? segNear(S.media.currentTime) : -1);
+  if (i < 0) return;
+  const el = $('g' + i);
+  if (el) el.classList.toggle('peek');
   const cap = $('cap');
   if (cap) cap.classList.toggle('peek');
 };
