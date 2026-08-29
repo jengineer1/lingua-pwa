@@ -475,6 +475,48 @@ function goSeg(d) {
   seek(S.segs[target].start);
 }
 
+/* ---------------------------------------------------------- audio slice */
+/* Play a span of the lesson audio and stop. Uses the word timestamps that
+   already exist, so hearing a word costs nothing and works offline - and you
+   hear the real speaker rather than a synthetic approximation.
+
+   The playhead is restored afterwards so looking a word up never loses your
+   place. */
+
+let sliceWatch = null;
+
+function playSlice(start, end, btn) {
+  if (!S.media || start == null) { toast('No timing for that word'); return; }
+  const m = S.media;
+  const restore = m.currentTime;
+  const wasPlaying = !m.paused;
+
+  const pad = 0.08;
+  let a = Math.max(0, start - pad);
+  let b = end + pad * 1.6;
+  if (b - a < 0.28) b = a + 0.28;      // very short words need a moment to register
+
+  if (sliceWatch) { cancelAnimationFrame(sliceWatch); sliceWatch = null; }
+  if (btn) btn.textContent = '‖';
+
+  const done = () => {
+    if (sliceWatch) { cancelAnimationFrame(sliceWatch); sliceWatch = null; }
+    m.pause();
+    m.currentTime = restore;
+    if (btn) btn.textContent = '▶';
+    if (wasPlaying) m.play().catch(() => {});
+  };
+
+  const watch = () => {
+    if (m.currentTime >= b) { done(); return; }
+    sliceWatch = requestAnimationFrame(watch);
+  };
+
+  m.currentTime = a;
+  m.play().then(() => { sliceWatch = requestAnimationFrame(watch); })
+          .catch(() => done());
+}
+
 /* --------------------------------------------------------------- sheet */
 
 function showSheet(html) {
@@ -483,6 +525,7 @@ function showSheet(html) {
   $('scrim').classList.add('up');
 }
 function hideSheet() {
+  if (sliceWatch) { cancelAnimationFrame(sliceWatch); sliceWatch = null; }
   $('sheet').classList.remove('up');
   $('scrim').classList.remove('up');
 }
@@ -512,8 +555,17 @@ function showWord(si, ti) {
     h += '<div class="row">' + ['new', 'learning', 'known', 'ignore'].map(k =>
       `<button data-set="${k}" class="${st === k ? 'on' : ''}">${k}</button>`).join('') + '</div>';
   }
-  h += `<div class="row"><button id="explain">Explain in context</button></div>`;
+  const hasTime = t.start != null;
+  h += `<div class="row">`
+     + (hasTime ? `<button id="hearw">▶ word</button>` : '')
+     + (s.start != null ? `<button id="hears">▶ sentence</button>` : '')
+     + `</div>`
+     + (t.interpolated ? `<div class="lm">timing for this word is estimated</div>` : '')
+     + `<div class="row"><button id="explain">Explain in context</button></div>`;
   showSheet(h);
+
+  if (hasTime) $('hearw').onclick = e => playSlice(t.start, t.end, e.currentTarget);
+  if (s.start != null) $('hears').onclick = e => playSlice(s.start, s.end, e.currentTarget);
   $('explain').onclick = () => explainWord(si, ti);
 
   $('sheet').querySelectorAll('[data-set]').forEach(b => b.onclick = async () => {
