@@ -157,6 +157,30 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
 #scrim { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:49; display:none; }
 #scrim.up { display:block; }
 
+/* Wide and landscape - iPad, or a desktop window. Video beside the
+   transcript rather than above it, so neither is squeezed and the eye
+   travel between them is short. */
+@media (min-width: 780px) and (orientation: landscape) {
+  #player {
+    display:grid;
+    grid-template-columns: 58% 42%;
+    grid-template-rows: 1fr auto;
+    min-height:0;
+  }
+  #stage { grid-column:1; grid-row:1; flex:none; height:100%; }
+  #script { grid-column:2; grid-row:1; min-height:0; padding-bottom:30%; }
+  #ctl { grid-column:1 / -1; grid-row:2; }
+
+  /* Cinema takes the whole area; the transcript steps aside. */
+  #stage.cinema { grid-column:1 / -1; }
+  #stage.cinema + #script { display:none; }
+  #stage.off { display:none; }
+  #stage.off + #script { grid-column:1 / -1; }
+  #stage.big { grid-column:1; }
+
+  #ctl button { padding:10px 0; font-size:13px; }
+}
+
 #toast {
   position:fixed; left:50%; bottom:calc(var(--bot) + 80px); transform:translateX(-50%);
   background:#2c2c23; border:1px solid var(--line); border-radius:9px;

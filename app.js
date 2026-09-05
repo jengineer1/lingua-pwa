@@ -335,6 +335,25 @@ function renderScript() {
 
 /* One sentence, drawn over the video. Shares the token markup with the
    transcript so highlighting and word status stay in step automatically. */
+/* Scroll the transcript pane and nothing else.
+ *
+ * scrollIntoView on iOS does not confine itself to the intended container -
+ * it scrolls every scrollable ancestor including the document. With the body
+ * fixed that manifested as the whole page creeping upward, taking the top bar
+ * out of reach and pushing the control bar off the bottom. Setting scrollTop
+ * on the pane directly cannot do that.
+ */
+function centreInScript(el) {
+  const box = $('script');
+  if (!box || !el) return;
+  const top = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+  const max = box.scrollHeight - box.clientHeight;
+  const want = Math.max(0, Math.min(max, top));
+  if (Math.abs(box.scrollTop - want) < 12) return;
+  try { box.scrollTo({ top: want, behavior: 'smooth' }); }
+  catch (e) { box.scrollTop = want; }
+}
+
 function renderCaption(si) {
   const cap = $('cap');
   if (!cap) return;
@@ -387,11 +406,7 @@ function loop() {
     if (si >= 0) {
       const el = $('g' + si);
       el.classList.add('cur');
-      const r = el.getBoundingClientRect();
-      const sr = $('script').getBoundingClientRect();
-      if (r.top < sr.top + 30 || r.bottom > sr.bottom - 100) {
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }
+      centreInScript(el);
     }
     renderCaption(si);
     S.curSeg = si;
@@ -834,6 +849,15 @@ document.addEventListener('keydown', e => {
 /* -------------------------------------------------------------- start */
 
 (async function boot() {
+  // The body is fixed, so any document scroll is something misbehaving.
+  // Snap it back rather than leaving controls out of reach.
+  const pin = () => {
+    if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+  };
+  window.addEventListener('scroll', pin, { passive: true });
+  window.addEventListener('resize', pin);
+  window.addEventListener('orientationchange', () => setTimeout(pin, 250));
+
   db = await openDB();
   await replayEvents();
   await loadLibrary();
