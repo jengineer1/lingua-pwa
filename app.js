@@ -346,9 +346,17 @@ function renderScript() {
 function centreInScript(el) {
   const box = $('script');
   if (!box || !el) return;
-  const top = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
-  const max = box.scrollHeight - box.clientHeight;
-  const want = Math.max(0, Math.min(max, top));
+
+  // Measured from the pane, not from offsetTop. offsetTop is relative to the
+  // nearest POSITIONED ancestor, and since body is fixed that was the body -
+  // so the value included the top bar and the whole video, and the scroll
+  // overshot by exactly that much, hiding the current line under the video.
+  const br = box.getBoundingClientRect();
+  const er = el.getBoundingClientRect();
+  const delta = (er.top - br.top) - (br.height - er.height) / 2;
+
+  const max = Math.max(0, box.scrollHeight - box.clientHeight);
+  const want = Math.max(0, Math.min(max, box.scrollTop + delta));
   if (Math.abs(box.scrollTop - want) < 12) return;
   try { box.scrollTo({ top: want, behavior: 'smooth' }); }
   catch (e) { box.scrollTop = want; }
