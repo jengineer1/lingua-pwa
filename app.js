@@ -542,15 +542,55 @@ function playSlice(start, end, btn) {
 
 /* --------------------------------------------------------------- sheet */
 
+/* Keep the sheet above the on-screen keyboard.
+ *
+ * iOS does not shrink the layout viewport when the keyboard opens - it draws
+ * the keyboard over the page, so a bottom-anchored fixed element ends up
+ * underneath it with no event to react to. visualViewport does report the
+ * change, and the difference between it and window.innerHeight is the
+ * keyboard's height.
+ */
+function fitSheet() {
+  const vv = window.visualViewport;
+  const sheet = $('sheet');
+  if (!sheet || !vv) return;
+  const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  S.keyboard = kb > 60;
+  sheet.style.bottom = kb + 'px';
+  // Leave room for the sheet itself to scroll when the keyboard is large.
+  sheet.style.maxHeight = Math.max(200, vv.height - 24) + 'px';
+}
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', fitSheet);
+  window.visualViewport.addEventListener('scroll', fitSheet);
+}
+
+// Bring a focused field into view without scrollIntoView, which on iOS
+// scrolls every ancestor including the document.
+function revealInSheet(el) {
+  const sheet = $('sheet');
+  if (!sheet || !el) return;
+  const want = Math.max(0, el.offsetTop - 12);
+  if (sheet.scrollHeight > sheet.clientHeight) sheet.scrollTop = want;
+}
+
 function showSheet(html) {
-  $('sheet').innerHTML = html;
-  $('sheet').classList.add('up');
+  const sheet = $('sheet');
+  sheet.innerHTML = html;
+  sheet.classList.add('up');
   $('scrim').classList.add('up');
+  fitSheet();
 }
 function hideSheet() {
   if (sliceWatch) { cancelAnimationFrame(sliceWatch); sliceWatch = null; }
-  $('sheet').classList.remove('up');
+  const sheet = $('sheet');
+  document.activeElement && document.activeElement.blur();
+  sheet.classList.remove('up');
   $('scrim').classList.remove('up');
+  sheet.style.bottom = '';
+  sheet.style.maxHeight = '';
+  S.keyboard = false;
 }
 
 function showWord(si, ti) {
@@ -860,6 +900,7 @@ document.addEventListener('keydown', e => {
   // The body is fixed, so any document scroll is something misbehaving.
   // Snap it back rather than leaving controls out of reach.
   const pin = () => {
+    if (S.keyboard) return;          // the keyboard legitimately shifts things
     if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
   };
   window.addEventListener('scroll', pin, { passive: true });
@@ -985,7 +1026,9 @@ function showAsk() {
       <button id="qfull">Ask about the whole lesson</button>
     </div>
     <div id="qout" style="white-space:pre-wrap;margin-top:12px"></div>`);
-  $('q').focus();
+  const q = $('q');
+  q.addEventListener('focus', () => setTimeout(() => { fitSheet(); revealInSheet(q); }, 320));
+  q.focus();
   $('qsend').onclick = () => runAsk(false);
   $('qfull').onclick = () => runAsk(true);
 }
@@ -1031,7 +1074,9 @@ function showPractice() {
       <button id="pfix">Check my Spanish</button>
     </div>
     <div id="pout" style="white-space:pre-wrap;margin-top:12px"></div>`);
-  $('p').focus();
+  const p = $('p');
+  p.addEventListener('focus', () => setTimeout(() => { fitSheet(); revealInSheet(p); }, 320));
+  p.focus();
   $('psay').onclick = () => runPractice('say');
   $('pfix').onclick = () => runPractice('fix');
 }

@@ -138,9 +138,12 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
   position:fixed; left:0; right:0; bottom:0; z-index:50;
   background:#23231b; border-top:1px solid #3d3d31;
   border-radius:16px 16px 0 0; padding:16px 18px calc(var(--bot) + 18px);
-  transform:translateY(110%); transition:transform .18s ease;
-  max-height:70vh; overflow-y:auto;
+  transform:translateY(110%);
+  transition:transform .18s ease, bottom .18s ease;
+  max-height:70dvh; overflow-y:auto; -webkit-overflow-scrolling:touch;
 }
+/* 16px minimum, or iOS zooms the page when a field takes focus. */
+#sheet textarea, #sheet input, #sheet select { font-size:16px; }
 #sheet.up { transform:translateY(0); }
 #sheet .hw { font-size:22px; font-weight:600; }
 #sheet .lm { font-size:13px; color:var(--dim); margin-bottom:9px; }
