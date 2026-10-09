@@ -17,7 +17,7 @@
 'use strict';
 
 const DB_NAME = 'lingua';
-const DB_VER = 2;
+const DB_VER = 3;
 const DEVICE = (() => {
   let d = localStorage.getItem('lingua.device');
   if (!d) { d = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('lingua.device', d); }
@@ -91,6 +91,10 @@ function openDB() {
       // Generated speech is cached by text+voice: the same phrase is replayed
       // constantly, and a cache hit costs nothing and works offline.
       if (!names.contains('tts')) d.createObjectStore('tts', { keyPath: 'k' });
+      // Saved flashcards, exported to Anki rather than reviewed here.
+      if (!names.contains('cards')) {
+        d.createObjectStore('cards', { keyPath: 'id', autoIncrement: true });
+      }
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -624,12 +628,23 @@ function showWord(si, ti) {
      + (s.start != null ? `<button id="hears">▶ sentence</button>` : '')
      + `</div>`
      + (t.interpolated ? `<div class="lm">timing for this word is estimated</div>` : '')
-     + `<div class="row"><button id="explain">Explain in context</button></div>`;
+     + `<div class="row"><button id="explain">Explain in context</button></div>`
+     + `<div class="lm" style="margin-top:10px">Capture this sentence</div>`
+     + `<div class="row">`
+     + `<button id="cps">Copy ES</button>`
+     + (s.translation ? `<button id="cpt">Copy EN</button>` : '')
+     + `<button id="dls">Save audio</button>`
+     + `</div>`;
   showSheet(h);
 
   if (hasTime) $('hearw').onclick = e => playSlice(t.start, t.end, e.currentTarget);
   if (s.start != null) $('hears').onclick = e => playSlice(s.start, s.end, e.currentTarget);
   $('explain').onclick = () => explainWord(si, ti);
+  $('cps').onclick = e => copyText(s.text, e.currentTarget);
+  if (s.translation) $('cpt').onclick = e => copyText(s.translation, e.currentTarget);
+  // The lesson's own audio is inside the mp4 and cannot be handed over as a
+  // file from here, so the saved clip is spoken rather than lifted.
+  $('dls').onclick = e => saveAudioFile(s.text, e.currentTarget);
 
   $('sheet').querySelectorAll('[data-set]').forEach(b => b.onclick = async () => {
     await emit('status', { key: S.man.language + ':' + lemma, value: b.dataset.set });
@@ -703,9 +718,10 @@ async function exportBackup() {
   const lessons = (await req(tx('lessons').getAll())).map(r => ({
     id: r.man.id, title: r.man.title, language: r.man.language,
   }));
+  const cards = await req(tx('cards').getAll()).catch(() => []);
   const blob = new Blob([JSON.stringify({
-    format: 1, exported: new Date().toISOString(), device: DEVICE,
-    lessons, events,
+    format: 2, exported: new Date().toISOString(), device: DEVICE,
+    lessons, events, cards,
   }, null, 1)], { type: 'application/json' });
 
   const name = 'lingua-backup-' + new Date().toISOString().slice(0, 10) + '.json';
@@ -743,9 +759,20 @@ async function importBackup(file) {
     const { seq, ...rest } = e;
     store.add(rest); added++;
   }
+  let addedCards = 0;
+  if (Array.isArray(data.cards) && data.cards.length) {
+    const have = new Set((await req(tx('cards').getAll()).catch(() => []))
+      .map(c => c.created + '|' + c.back));
+    const cs = tx('cards', 'readwrite');
+    for (const c of data.cards) {
+      if (have.has(c.created + '|' + c.back)) continue;
+      const { id, ...rest } = c;
+      cs.add(rest); addedCards++;
+    }
+  }
   await replayEvents();
   renderLibrary(); updateStat();
-  toast(`Merged ${added} events`);
+  toast(`Merged ${added} events` + (addedCards ? `, ${addedCards} cards` : ''));
 }
 
 /* ---------------------------------------------------------------- menu */
@@ -757,6 +784,7 @@ async function showMenu() {
   const total = Math.round(Object.values(S.studied).reduce((a, b) => a + b, 0) / 60);
 
   const n = await unsavedCount();
+  S.cardCount = await cardCount();
   const { at } = backupState();
   const when = at ? new Date(at).toLocaleDateString() : 'never';
   const warn = n > 0
@@ -769,6 +797,7 @@ async function showMenu() {
     ${warn}
     <div class="row" style="flex-direction:column">
       <button data-act="practice">Practice / translate</button>
+      <button data-act="cards">Flashcards${S.cardCount ? ' (' + S.cardCount + ')' : ''}</button>
       <button data-act="settings">Settings</button>
       <button data-act="import">Import lesson (.lpkg)</button>
       <button data-act="export">Export backup</button>
@@ -781,6 +810,7 @@ async function showMenu() {
     hideSheet();
     const a = b.dataset.act;
     if (a === 'practice') showPractice();
+    else if (a === 'cards') showCards();
     else if (a === 'settings') showSettings();
     else if (a === 'import') { S.expect = 'lesson'; $('file').click(); }
     else if (a === 'export') exportBackup();
@@ -1125,7 +1155,34 @@ async function runPractice(mode) {
     if (mode === 'say' && d.back) h += `<div class="lm">${esc(d.back)}</div>`;
     const note = mode === 'say' ? d.note : d.why;
     if (note) h += `<div class="nt" style="white-space:pre-wrap">${esc(note)}</div>`;
+    const front = mode === 'say' ? text : (d.back || text);
+    if (spanish) {
+      h += `<div class="row">`
+         + `<button id="cpes">Copy ES</button>`
+         + `<button id="cpen">Copy EN</button>`
+         + `<button id="dlaudio">Save audio</button>`
+         + `</div>`
+         + `<div class="row"><button id="savecard">Add to card batch</button></div>`;
+    }
     out.innerHTML = h;
+
+    if (spanish) {
+      $('cpes').onclick = e => copyText(spanish, e.currentTarget);
+      $('cpen').onclick = e => copyText(front, e.currentTarget);
+      $('dlaudio').onclick = e => saveAudioFile(spanish, e.currentTarget);
+      $('savecard').onclick = async () => {
+        // Generate the audio now if it isn't cached, so the card leaves here
+        // complete rather than silent.
+        if (getTtsKey() && getVoice()) {
+          const k = await hashKey(spanish, getVoice());
+          const have = await req(tx('tts').get(k)).catch(() => null);
+          if (!have) await speak(spanish, null);
+        }
+        await saveCard(front, spanish, note, getVoice());
+        $('savecard').textContent = 'Added ✓';
+        $('savecard').disabled = true;
+      };
+    }
   } catch (e) { out.textContent = e.message; }
 }
 
@@ -1362,4 +1419,272 @@ async function loadVoices() {
   // Usable voices first, so a free account sees what it can actually play.
   list.sort((a, b) => (b.free - a.free) || a.name.localeCompare(b.name));
   return list;
+}
+
+/* =====================================================================
+ * Flashcard export.
+ *
+ * Cards are not reviewed here - Anki is better at scheduling than anything
+ * worth building. The app only collects them and hands them over, with the
+ * audio already generated so a card arrives complete.
+ *
+ * The zip is written with everything STORED rather than deflated. mp3 does
+ * not compress and the manifest is tiny, so it costs nothing and avoids
+ * needing a compressor.
+ * ===================================================================== */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function zipStore(entries) {
+  // entries: [{ name, bytes }]
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+
+  for (const e of entries) {
+    const nameBytes = enc.encode(e.name);
+    const crc = crc32(e.bytes);
+    const size = e.bytes.length;
+
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true);          // version needed
+    lh.setUint16(6, 0, true);           // flags
+    lh.setUint16(8, 0, true);           // method: stored
+    lh.setUint16(10, 0, true);          // time
+    lh.setUint16(12, 0, true);          // date
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, size, true);
+    lh.setUint32(22, size, true);
+    lh.setUint16(26, nameBytes.length, true);
+    lh.setUint16(28, 0, true);          // extra
+
+    parts.push(new Uint8Array(lh.buffer), nameBytes, e.bytes);
+
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true);
+    cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0, true);
+    cd.setUint16(10, 0, true);
+    cd.setUint16(12, 0, true);
+    cd.setUint16(14, 0, true);
+    cd.setUint32(16, crc, true);
+    cd.setUint32(20, size, true);
+    cd.setUint32(24, size, true);
+    cd.setUint16(28, nameBytes.length, true);
+    cd.setUint16(30, 0, true);
+    cd.setUint16(32, 0, true);
+    cd.setUint16(34, 0, true);
+    cd.setUint16(36, 0, true);
+    cd.setUint32(38, 0, true);
+    cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + size;
+  }
+
+  const cdSize = central.reduce((a, b) => a + b.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, cdSize, true);
+  eocd.setUint32(16, offset, true);
+
+  return new Blob([...parts, ...central, new Uint8Array(eocd.buffer)],
+                  { type: 'application/zip' });
+}
+
+/* ---- saving ---- */
+
+async function saveCard(front, back, note, voice) {
+  const audioKey = back && voice ? await hashKey(back, voice) : null;
+  await req(tx('cards', 'readwrite').add({
+    front, back, note: note || '',
+    audio: audioKey,
+    lang: S.man ? S.man.language : 'es',
+    source: S.man ? S.man.title : null,
+    created: Date.now(),
+  }));
+  toast('Card saved');
+}
+
+async function cardCount() {
+  try { return await req(tx('cards').count()); } catch (e) { return 0; }
+}
+
+/* ---- export ---- */
+
+async function exportCards() {
+  const cards = await req(tx('cards').getAll());
+  if (!cards.length) { toast('No cards saved yet'); return; }
+
+  busy('Flashcards');
+  const enc = new TextEncoder();
+  const files = [];
+  const rows = [];
+  let n = 0;
+
+  for (const c of cards) {
+    let media = '';
+    if (c.audio) {
+      const hit = await req(tx('tts').get(c.audio)).catch(() => null);
+      if (hit && hit.blob) {
+        const name = `lingua_${c.id}.mp3`;
+        files.push({ name: 'media/' + name,
+                     bytes: new Uint8Array(await hit.blob.arrayBuffer()) });
+        media = `[sound:${name}]`;
+        n++;
+      }
+    }
+    // Tab separated, with tabs and newlines stripped from the fields so a
+    // multi-line note cannot break the row structure.
+    const clean = v => (v || '').replace(/[\t\r\n]+/g, ' ').trim();
+    rows.push([clean(c.front), clean(c.back) + (media ? ' ' + media : ''),
+               clean(c.note), clean(c.source)].join('\t'));
+  }
+
+  files.unshift({ name: 'cards.tsv', bytes: enc.encode(rows.join('\n') + '\n') });
+  files.unshift({ name: 'README.txt', bytes: enc.encode(
+    'Lingua flashcard export\n\n'
+    + 'Fields: Front(English)  Back(Spanish)  Note  Source\n'
+    + 'Audio files are in media/ and referenced as [sound:...].\n\n'
+    + 'To build an Anki deck, run on the PC:\n'
+    + '    python anki.py path/to/this.zip\n') });
+
+  const blob = zipStore(files);
+  const name = 'lingua-cards-' + new Date().toISOString().slice(0, 10) + '.zip';
+  const file = new File([blob], name, { type: 'application/zip' });
+
+  hideSheet();
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); } catch (e) { return; }
+  } else {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  toast(`${cards.length} cards, ${n} with audio`);
+}
+
+/* ---- straight to Anki on the phone ----
+ *
+ * The batch export above goes through the PC, which is friction when you are
+ * studying away from it. These two put the pieces on the phone directly:
+ * text on the clipboard, audio in Files. Anki Mobile's own card editor takes
+ * it from there.
+ */
+
+async function copyText(text, btn) {
+  const label = btn ? btn.textContent : null;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    // Older WebKit, or a context where the async API is refused.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e2) { toast('Could not copy'); }
+    ta.remove();
+  }
+  if (btn) {
+    btn.textContent = 'Copied ✓';
+    setTimeout(() => { btn.textContent = label; }, 1400);
+  }
+}
+
+/* Filename from the phrase itself, so it is recognisable in Anki's file
+   picker rather than being one of a dozen identical names. */
+function audioName(text) {
+  const base = text.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 40) || 'frase';
+  return base + '.mp3';
+}
+
+async function saveAudioFile(text, btn) {
+  if (!getTtsKey() || !getVoice()) {
+    toast('Set an ElevenLabs key and voice in Settings', 4000);
+    return;
+  }
+  const label = btn ? btn.textContent : null;
+  if (btn) btn.textContent = '…';
+
+  const k = await hashKey(text, getVoice());
+  let hit = await req(tx('tts').get(k)).catch(() => null);
+  if (!hit) {
+    await speak(text, null);                       // generates and caches
+    hit = await req(tx('tts').get(k)).catch(() => null);
+  }
+  if (!hit || !hit.blob) {
+    if (btn) btn.textContent = label;
+    return;                                        // speak() already explained why
+  }
+
+  const file = new File([hit.blob], audioName(text), { type: 'audio/mpeg' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+    } else {
+      const url = URL.createObjectURL(hit.blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = file.name; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+  } catch (e) { /* cancelled */ }
+  if (btn) btn.textContent = label;
+}
+
+/* ---- card list ---- */
+
+async function showCards() {
+  const cards = (await req(tx('cards').getAll())).reverse();
+  if (!cards.length) {
+    showSheet(`<div class="hw">Flashcards</div>
+      <div class="lm">None saved yet. Use "Save card" after a practice answer.</div>
+      <div class="row"><button id="sheetclose">Close</button></div>`);
+    $('sheetclose').onclick = hideSheet;
+    return;
+  }
+  showSheet(`<div class="hw">${cards.length} flashcard${cards.length === 1 ? '' : 's'}</div>
+    <div class="lm">Exported to Anki; not reviewed here</div>
+    ${cards.slice(0, 40).map(c => `
+      <div class="nt" style="display:flex;align-items:flex-start;gap:8px">
+        <div style="flex:1">
+          <div>${esc(c.back)}${c.audio ? ' ♪' : ''}</div>
+          <div style="opacity:.7">${esc(c.front)}</div>
+        </div>
+        <button data-del="${c.id}" style="padding:2px 8px">×</button>
+      </div>`).join('')}
+    ${cards.length > 40 ? `<div class="lm">…and ${cards.length - 40} more</div>` : ''}
+    <div class="row"><button id="cexport">Export for Anki</button></div>`);
+
+  $('cexport').onclick = exportCards;
+  $('sheet').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    await req(tx('cards', 'readwrite').delete(+b.dataset.del));
+    showCards();
+  });
 }
