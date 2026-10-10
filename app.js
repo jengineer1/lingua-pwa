@@ -288,7 +288,7 @@ async function openLesson(id) {
   stage.classList.toggle('audio', row.man.kind === 'audio');
   const tag = row.man.kind === 'audio' ? 'audio' : 'video';
   stage.innerHTML = `<${tag} id="v" controls playsinline preload="metadata"></${tag}>`
-    + `<div id="cap" class="${localStorage.getItem('lingua.cc') === '0' ? 'off' : ''}"></div>`;
+    + `<div id="cap"></div>`;
   S.media = $('v');
   S.media.src = URL.createObjectURL(m.blob);
 
@@ -301,7 +301,8 @@ async function openLesson(id) {
   $('back').classList.remove('hidden');
   $('size').classList.toggle('hidden', row.man.kind === 'audio');
   $('cc').classList.toggle('hidden', row.man.kind === 'audio');
-  $('cc').classList.toggle('on', localStorage.getItem('lingua.cc') !== '0');
+  $('fs').classList.toggle('hidden', row.man.kind === 'audio');
+  applyCapMode(capMode(), false);
   updateStat();
 
   S.media.addEventListener('play', startClock);
@@ -320,6 +321,7 @@ function closeLesson() {
   $('stage').innerHTML = '';
   $('player').classList.add('hidden');
   $('library').classList.remove('hidden');
+  setImmersive(false);
   $('back').classList.add('hidden');
   $('size').classList.add('hidden');
   $('title').textContent = 'Lingua';
@@ -403,7 +405,7 @@ function renderCaption(si) {
   });
   if (cur < s.text.length) out += esc(s.text.slice(cur));
   cap.classList.remove('peek');
-  cap.innerHTML = `<div>${out}</div>`
+  cap.innerHTML = `<div class="es">${out}</div>`
     + `<div class="tr">${esc(s.translation || '')}</div>`;
 }
 
@@ -985,6 +987,10 @@ $('tr').onclick = function () {
 };
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('immersive')) {
+    setImmersive(false);
+    return;
+  }
   if (!S.media) return;
   const k = e.key.toLowerCase();
   if (k === ' ') { e.preventDefault(); $('play').click(); }
@@ -1380,12 +1386,57 @@ function showSettings() {
 
 $('ask').onclick = showAsk;
 
-$('cc').onclick = function () {
+/* Caption language is its own setting, separate from the transcript's EN
+   toggle: watching and reading along want different things. */
+const CAP_MODES = [
+  { id: 'off',  label: 'CC',    say: 'Captions off' },
+  { id: 'es',   label: 'ES',    say: 'Spanish captions' },
+  { id: 'en',   label: 'EN',    say: 'English captions' },
+  { id: 'both', label: 'ES·EN', say: 'Spanish and English captions' },
+];
+
+function capMode() {
+  const want = localStorage.getItem('lingua.cap');
+  return CAP_MODES.find(m => m.id === want) ? want : 'es';
+}
+
+function applyCapMode(mode, announce) {
+  localStorage.setItem('lingua.cap', mode);
+  const m = CAP_MODES.find(x => x.id === mode) || CAP_MODES[1];
   const cap = $('cap');
-  if (!cap) return;
-  const on = cap.classList.toggle('off') === false;
-  this.classList.toggle('on', on);
-  localStorage.setItem('lingua.cc', on ? '1' : '0');
+  if (cap) {
+    CAP_MODES.forEach(x => cap.classList.remove('m-' + x.id));
+    cap.classList.add('m-' + m.id);
+  }
+  const btn = $('cc');
+  if (btn) {
+    btn.textContent = m.label;
+    btn.classList.toggle('on', m.id !== 'off');
+    btn.title = m.say;
+  }
+  if (announce) toast(m.say, 1400);
+}
+
+/* Immersive mode: our own full-screen layout, not the browser's.
+ *
+ * A real requestFullscreen on iOS hands the video to the native player,
+ * which paints over the DOM and takes the tappable captions with it. Sizing
+ * the stage to the viewport ourselves keeps them.
+ */
+function setImmersive(on) {
+  document.body.classList.toggle('immersive', on);
+  $('exitfs').style.display = on ? 'block' : 'none';
+  $('fs').classList.toggle('on', on);
+  // Captions are the whole point of this mode, so turn them on if they are off.
+  if (on && capMode() === 'off') applyCapMode('es', true);
+}
+
+$('fs').onclick = () => setImmersive(!document.body.classList.contains('immersive'));
+$('exitfs').onclick = () => setImmersive(false);
+
+$('cc').onclick = () => {
+  const i = CAP_MODES.findIndex(m => m.id === capMode());
+  applyCapMode(CAP_MODES[(i + 1) % CAP_MODES.length].id, true);
 };
 
 /* =====================================================================
