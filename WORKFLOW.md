@@ -257,6 +257,26 @@ GitHub Pages redeploys in a minute or two. On the phone, **fully close the app
 from the app switcher** before relaunching — a running instance keeps the old
 JavaScript in memory.
 
+### Study log
+
+**•••** -> **Study log** shows today, the last 7 days, all time, and the
+current streak, with a 14-day bar chart split between reading along and
+listening. Below that, time per lesson, and an **Export CSV** button if you
+want the daily figures elsewhere.
+
+Reading along and listening are counted separately because they train
+different skills. A lesson counts as listening when it is an audio-only
+package, or when the video is hidden with the `▢` button. Everything else
+counts as reading along.
+
+Nothing extra is stored for this - it is derived by replaying the event log,
+which has always carried timestamps. So the history covers every session ever
+logged, including those from before this view existed, and it rides along in
+the same backup as vocabulary.
+
+A day counts toward the streak at one minute or more. A streak is not broken
+by today being empty until tomorrow, so an evening session still counts.
+
 ### Flashcards to Anki
 
 Two routes. The phone one needs no PC.

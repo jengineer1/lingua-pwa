@@ -119,6 +119,7 @@ const S = {
   lessons: [],      // manifests
   vocab: {},        // 'es:lemma' -> status
   studied: {},      // lessonId -> seconds
+  days: {},         // 'YYYY-MM-DD' -> { read, listen } seconds
   doc: null,        // current lesson content
   man: null,        // current manifest
   segs: [],
@@ -131,6 +132,21 @@ const S = {
   tick: null,
   lastCount: 0,
 };
+
+/* Local-day key. Deliberately local rather than UTC: a session at 11pm
+   belongs to that evening, not to the next day. */
+function dayKey(ts) {
+  const d = new Date(ts);
+  return d.getFullYear() + '-'
+       + String(d.getMonth() + 1).padStart(2, '0') + '-'
+       + String(d.getDate()).padStart(2, '0');
+}
+
+function hm(secs) {
+  const m = Math.round(secs / 60);
+  if (m < 60) return m + 'm';
+  return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+}
 
 const $ = id => document.getElementById(id);
 const esc = s => (s || '').replace(/[&<>"]/g, c =>
@@ -154,11 +170,18 @@ async function emit(kind, payload) {
 
 function applyEvent(ev) {
   if (ev.kind === 'status') S.vocab[ev.key] = ev.value;
-  else if (ev.kind === 'study') S.studied[ev.lesson] = (S.studied[ev.lesson] || 0) + ev.value;
+  else if (ev.kind === 'study') {
+    S.studied[ev.lesson] = (S.studied[ev.lesson] || 0) + ev.value;
+    // Bucket by local day. Events have always carried a timestamp, so this
+    // works retroactively over everything already logged.
+    const day = dayKey(ev.ts);
+    const d = S.days[day] || (S.days[day] = { read: 0, listen: 0 });
+    d[ev.mode === 'listen' ? 'listen' : 'read'] += ev.value;
+  }
 }
 
 async function replayEvents() {
-  S.vocab = {}; S.studied = {};
+  S.vocab = {}; S.studied = {}; S.days = {};
   const all = await req(tx('events').getAll());
   all.sort((a, b) => a.ts - b.ts);   // last write per key wins
   all.forEach(applyEvent);
@@ -394,15 +417,59 @@ function updateStat() {
 /* Study time is accumulated in short bursts rather than one event per
    session, so a crash or a swipe-away loses at most a few seconds. */
 
+/* Study time is credited from the WALL CLOCK between ticks, not as a flat
+ * amount per tick.
+ *
+ * iOS throttles timers when the screen locks or the app backgrounds, so a
+ * fixed 15-per-tick both under-counts a late tick and loses whatever played
+ * between the last tick and a pause. Measuring the delta and flushing on
+ * pause fixes both. The delta is capped so a long throttle gap - or a device
+ * that slept with the media element technically unpaused - cannot credit
+ * time nobody spent.
+ */
+const TICK_MS = 15000;
+const MAX_CREDIT = 90;        // seconds; a gap longer than this is not study
+
+function studyMode() {
+  // Audio-only lessons, and video deliberately hidden, are listening
+  // practice; reading along with the text is a different skill and is worth
+  // counting separately.
+  if (!S.man) return 'read';
+  if (S.man.kind === 'audio') return 'listen';
+  const st = $('stage');
+  return (st && st.classList.contains('off')) ? 'listen' : 'read';
+}
+
+function creditTime() {
+  if (!S.media || !S.man) return;
+  const now = Date.now();
+  if (!S._last) { S._last = now; return; }
+  const secs = Math.round((now - S._last) / 1000);
+  S._last = now;
+  if (secs <= 0) return;
+  emit('study', {
+    lesson: S.man.id,
+    value: Math.min(secs, MAX_CREDIT),
+    mode: studyMode(),
+  });
+}
+
 function startClock() {
   if (S._clock) return;
+  S._last = Date.now();
   S._clock = setInterval(() => {
-    if (S.media && !S.media.paused) emit('study', { lesson: S.man.id, value: 15 });
-  }, 15000);
+    if (S.media && !S.media.paused) creditTime();
+    else { stopClock(); }
+  }, TICK_MS);
 }
+
 function stopClock() {
-  clearInterval(S._clock);
-  S._clock = null;
+  if (S._clock) {
+    clearInterval(S._clock);
+    S._clock = null;
+    creditTime();              // do not lose the partial interval
+  }
+  S._last = null;
 }
 
 function loop() {
@@ -781,10 +848,12 @@ async function showMenu() {
   const lang = S.man ? S.man.language : 'es';
   const known = Object.entries(S.vocab)
     .filter(([k, v]) => k.startsWith(lang + ':') && v === 'known').length;
-  const total = Math.round(Object.values(S.studied).reduce((a, b) => a + b, 0) / 60);
+  const t = totals();
 
   const n = await unsavedCount();
   S.cardCount = await cardCount();
+  const todaySecs = dayTotal(dayKey(Date.now()));
+  const todayStr = todaySecs >= 30 ? hm(todaySecs) : '';
   const { at } = backupState();
   const when = at ? new Date(at).toLocaleDateString() : 'never';
   const warn = n > 0
@@ -793,9 +862,10 @@ async function showMenu() {
 
   showSheet(`
     <div class="hw">Lingua</div>
-    <div class="lm">${known} words known · ${total} minutes studied</div>
+    <div class="lm">${known} words known · ${hm(t.all)} studied · ${streak()}-day streak</div>
     ${warn}
     <div class="row" style="flex-direction:column">
+      <button data-act="log">Study log${todayStr ? ' · ' + todayStr : ''}</button>
       <button data-act="practice">Practice / translate</button>
       <button data-act="cards">Flashcards${S.cardCount ? ' (' + S.cardCount + ')' : ''}</button>
       <button data-act="settings">Settings</button>
@@ -809,7 +879,8 @@ async function showMenu() {
   $('sheet').querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
     hideSheet();
     const a = b.dataset.act;
-    if (a === 'practice') showPractice();
+    if (a === 'log') showLog();
+    else if (a === 'practice') showPractice();
     else if (a === 'cards') showCards();
     else if (a === 'settings') showSettings();
     else if (a === 'import') { S.expect = 'lesson'; $('file').click(); }
@@ -1687,4 +1758,155 @@ async function showCards() {
     await req(tx('cards', 'readwrite').delete(+b.dataset.del));
     showCards();
   });
+}
+
+/* =====================================================================
+ * Study log.
+ *
+ * Everything here is derived from the event log by replay - nothing extra
+ * is stored. That means the per-day history covers every session ever
+ * logged, including the ones recorded before this view existed, and it
+ * survives the same backup and restore as vocabulary.
+ * ===================================================================== */
+
+const STREAK_MIN = 60;        // seconds in a day for it to count as studied
+
+function dayTotal(key) {
+  const d = S.days[key];
+  return d ? d.read + d.listen : 0;
+}
+
+function recentDays(n) {
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const key = dayKey(d.getTime());
+    out.push({ key, date: d, ...(S.days[key] || { read: 0, listen: 0 }) });
+  }
+  return out;
+}
+
+function streak() {
+  // Counts back from today; a day with nothing today does not break a streak
+  // until tomorrow, so an evening session still counts.
+  let n = 0;
+  const now = new Date();
+  for (let i = 0; i < 400; i++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const t = dayTotal(dayKey(d.getTime()));
+    if (t >= STREAK_MIN) n++;
+    else if (i > 0) break;
+  }
+  return n;
+}
+
+function totals() {
+  let read = 0, listen = 0, days = 0;
+  for (const k in S.days) {
+    read += S.days[k].read;
+    listen += S.days[k].listen;
+    if (dayTotal(k) >= STREAK_MIN) days++;
+  }
+  return { read, listen, all: read + listen, days };
+}
+
+function barChart(days) {
+  const max = Math.max(60, ...days.map(d => d.read + d.listen));
+  const H = 64;
+  const rows = days.map(d => {
+    const total = d.read + d.listen;
+    const h = total ? Math.max(3, Math.round(total / max * H)) : 0;
+    const lh = total ? Math.round(d.listen / max * H) : 0;
+    const label = d.date.toLocaleDateString(undefined, { weekday: 'narrow' });
+    const title = `${d.key}: ${hm(total)}`
+      + (d.listen ? ` (${hm(d.read)} read, ${hm(d.listen)} listen)` : '');
+    return `<div style="flex:1;display:flex;flex-direction:column;
+                        align-items:center;gap:4px" title="${esc(title)}">
+      <div style="height:${H}px;display:flex;flex-direction:column;
+                  justify-content:flex-end;width:100%;max-width:18px">
+        ${lh ? `<div style="height:${lh}px;background:var(--learn-b);
+                  border-radius:2px 2px 0 0"></div>` : ''}
+        ${h - lh > 0 ? `<div style="height:${h - lh}px;background:var(--accent);
+                  border-radius:${lh ? '0' : '2px 2px'} 0 0"></div>` : ''}
+      </div>
+      <div style="font-size:10px;color:var(--dim)">${esc(label)}</div>
+    </div>`;
+  }).join('');
+
+  return `<div style="display:flex;align-items:flex-end;gap:3px;margin:10px 0">
+    ${rows}</div>
+    <div style="font-size:11px;color:var(--dim);display:flex;gap:12px">
+      <span><span style="display:inline-block;width:8px;height:8px;
+        background:var(--accent);border-radius:2px"></span> read along</span>
+      <span><span style="display:inline-block;width:8px;height:8px;
+        background:var(--learn-b);border-radius:2px"></span> listening</span>
+      <span style="margin-left:auto">peak ${hm(max)}</span>
+    </div>`;
+}
+
+async function showLog() {
+  const t = totals();
+  const today = dayTotal(dayKey(Date.now()));
+  const week = recentDays(7).reduce((a, d) => a + d.read + d.listen, 0);
+  const st = streak();
+
+  const lessons = (await req(tx('lessons').getAll()))
+    .map(r => ({ title: r.man.title, secs: S.studied[r.man.id] || 0 }))
+    .filter(x => x.secs > 30)
+    .sort((a, b) => b.secs - a.secs);
+
+  const cell = (big, small) =>
+    `<div style="flex:1"><div style="font-size:22px">${big}</div>
+     <div style="font-size:11px;color:var(--dim)">${small}</div></div>`;
+
+  showSheet(`
+    <div class="hw">Study log</div>
+    <div style="display:flex;gap:10px;margin:12px 0 4px">
+      ${cell(hm(today), 'today')}
+      ${cell(hm(week), 'last 7 days')}
+      ${cell(hm(t.all), 'all time')}
+      ${cell(st + (st === 1 ? ' day' : ' days'), 'streak')}
+    </div>
+    ${barChart(recentDays(14))}
+    <div class="lm" style="margin-top:12px">
+      ${t.days} day${t.days === 1 ? '' : 's'} studied ·
+      ${hm(t.read)} reading · ${hm(t.listen)} listening
+    </div>
+    ${lessons.length ? `<div class="lm" style="margin-top:12px">By lesson</div>`
+      + lessons.slice(0, 15).map(l => `
+        <div class="nt" style="display:flex;gap:10px">
+          <span style="flex:1">${esc(l.title)}</span>
+          <span style="color:var(--fg)">${hm(l.secs)}</span>
+        </div>`).join('') : ''}
+    <div class="row">
+      <button id="logcsv">Export CSV</button>
+      <button id="sheetclose">Close</button>
+    </div>`);
+
+  $('sheetclose').onclick = hideSheet;
+  $('logcsv').onclick = exportLog;
+}
+
+async function exportLog() {
+  const keys = Object.keys(S.days).sort();
+  const rows = ['date,minutes,read_minutes,listen_minutes'];
+  for (const k of keys) {
+    const d = S.days[k];
+    rows.push([k, Math.round((d.read + d.listen) / 60),
+               Math.round(d.read / 60), Math.round(d.listen / 60)].join(','));
+  }
+  const blob = new Blob([rows.join('\n') + '\n'], { type: 'text/csv' });
+  const name = 'lingua-log-' + dayKey(Date.now()) + '.csv';
+  const file = new File([blob], name, { type: 'text/csv' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; }
+    catch (e) { return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
