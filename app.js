@@ -1460,7 +1460,7 @@ async function hashKey(text, voice) {
     .map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function speak(text, btn) {
+async function speak(text, btn, quiet) {
   const key = getTtsKey(), voice = getVoice();
   if (!key || !voice) { toast('Set an ElevenLabs key and voice in Settings', 4000); return; }
 
@@ -1504,6 +1504,7 @@ async function speak(text, btn) {
   }
 
   if (btn) btn.textContent = '▶';
+  if (quiet) return;
   const url = URL.createObjectURL(hit.blob);
   const a = new Audio(url);
   a.onended = () => URL.revokeObjectURL(url);
@@ -1753,17 +1754,20 @@ async function saveAudioFile(text, btn) {
     return;
   }
   const label = btn ? btn.textContent : null;
-  if (btn) btn.textContent = '…';
-
   const k = await hashKey(text, getVoice());
   let hit = await req(tx('tts').get(k)).catch(() => null);
+
   if (!hit) {
-    await speak(text, null);                       // generates and caches
+    // Generate and cache only. iOS lets a page open the share sheet only
+    // within a few seconds of a tap, and the network round trip uses that
+    // up, so sharing straight after generating fails silently. The second
+    // tap, with the audio already cached, shares instantly.
+    if (btn) btn.textContent = '…';
+    await speak(text, null, true);                 // generate, do not play
     hit = await req(tx('tts').get(k)).catch(() => null);
-  }
-  if (!hit || !hit.blob) {
     if (btn) btn.textContent = label;
-    return;                                        // speak() already explained why
+    if (hit && hit.blob) toast('Audio ready. Tap Save audio again.', 3500);
+    return;                                        // on failure speak() toasted why
   }
 
   const file = new File([hit.blob], audioName(text), { type: 'audio/mpeg' });
@@ -1776,8 +1780,9 @@ async function saveAudioFile(text, btn) {
       a.href = url; a.download = file.name; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
-  } catch (e) { /* cancelled */ }
-  if (btn) btn.textContent = label;
+  } catch (e) {
+    if (e && e.name !== 'AbortError') toast('Could not open share sheet: ' + (e.message || e.name), 4000);
+  }
 }
 
 /* ---- card list ---- */
