@@ -16,7 +16,7 @@
 
 'use strict';
 
-const APP_VERSION = '2026-10-13c';
+const APP_VERSION = '2026-10-13d';
 
 /* Make silent failures visible: a script error anywhere shows up as a message
    instead of a button that simply does nothing. */
@@ -1506,7 +1506,14 @@ async function speak(text, btn, quiet) {
       });
       if (!r.ok) {
         let msg = `TTS error ${r.status}`;
-        if (r.status === 401) msg = 'ElevenLabs key rejected';
+        if (r.status === 401) {
+          // ElevenLabs says WHY: a bad key and a key missing a permission
+          // look the same by status alone but need different fixes.
+          const body = await r.text().catch(() => '');
+          let why = '';
+          try { const d = JSON.parse(body).detail; why = typeof d === 'string' ? d : (d && d.message) || ''; } catch (e) {}
+          msg = 'ElevenLabs key rejected' + (why ? ': ' + why.slice(0, 160) : '');
+        }
         else if (r.status === 402) {
           // Free accounts cannot use community Voice Library voices through
           // the API, even though the same voice works on the ElevenLabs site.
