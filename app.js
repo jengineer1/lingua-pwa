@@ -16,6 +16,24 @@
 
 'use strict';
 
+const APP_VERSION = '2026-10-13a';
+
+/* Make silent failures visible: a script error anywhere shows up as a message
+   instead of a button that simply does nothing. */
+let _lastErr = 0;
+function reportError(msg) {
+  const now = Date.now();
+  if (now - _lastErr < 3000) return;
+  _lastErr = now;
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = 'Error: ' + String(msg).slice(0, 140);
+  t.classList.add('up');
+  setTimeout(() => t.classList.remove('up'), 6000);
+}
+window.addEventListener('error', e => reportError(e.message));
+window.addEventListener('unhandledrejection', e => reportError(e.reason && e.reason.message || e.reason));
+
 const DB_NAME = 'lingua';
 const DB_VER = 3;
 const DEVICE = (() => {
@@ -861,6 +879,7 @@ async function showMenu() {
   const warn = n > 0
     ? `<div class="ov">${n} change${n === 1 ? '' : 's'} not backed up · last backup ${when}</div>`
     : `<div class="lm">All changes backed up · ${when}</div>`;
+  const ver = `<div class="lm" style="margin-top:8px">Version ${APP_VERSION}</div>`;
 
   showSheet(`
     <div class="hw">Lingua</div>
@@ -876,7 +895,8 @@ async function showMenu() {
       <button data-act="restore">Restore from backup</button>
       <button data-act="persist">Request persistent storage</button>
       <button data-act="usage">Storage used</button>
-    </div>`);
+    </div>
+    ${ver}`);
 
   $('sheet').querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
     hideSheet();

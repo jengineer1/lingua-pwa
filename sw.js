@@ -5,7 +5,7 @@
  * available offline.
  */
 
-const CACHE = 'lingua-shell-v1';
+const CACHE = 'lingua-shell-v2';
 const SHELL = [
   './',
   './index.html',
@@ -39,7 +39,7 @@ self.addEventListener('fetch', e => {
   // back to cache when offline. The files are tiny, so the cost is trivial
   // and it avoids the classic "stuck on an old version" PWA problem.
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
