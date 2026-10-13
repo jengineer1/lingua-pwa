@@ -16,7 +16,7 @@
 
 'use strict';
 
-const APP_VERSION = '2026-10-13b';
+const APP_VERSION = '2026-10-13c';
 
 /* Make silent failures visible: a script error anywhere shows up as a message
    instead of a button that simply does nothing. */
@@ -1473,8 +1473,8 @@ bind('cc', () => {
 const TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech/';
 const TTS_MODEL = 'eleven_multilingual_v2';
 
-const getTtsKey = () => localStorage.getItem('lingua.tts.key') || '';
-const getVoice = () => localStorage.getItem('lingua.tts.voice') || '';
+const getTtsKey = () => (localStorage.getItem('lingua.tts.key') || '').trim();
+const getVoice = () => (localStorage.getItem('lingua.tts.voice') || '').trim();
 const getVoiceName = () => localStorage.getItem('lingua.tts.name') || 'none selected';
 
 async function hashKey(text, voice) {
@@ -1514,6 +1514,17 @@ async function speak(text, btn, quiet) {
           msg = /library voices/i.test(body)
             ? 'Free plan cannot use Voice Library voices via API. Pick a premade voice, or upgrade.'
             : 'ElevenLabs quota exhausted for this month.';
+        }
+        else {
+          // Show what ElevenLabs actually said instead of a bare number.
+          const body = await r.text().catch(() => '');
+          let detail = body;
+          try {
+            const j = JSON.parse(body);
+            const d = j.detail;
+            detail = typeof d === 'string' ? d : (d && (d.message || d.status)) || body;
+          } catch (e) { /* not JSON */ }
+          if (detail) msg += ': ' + String(detail).slice(0, 160);
         }
         throw new Error(msg);
       }
