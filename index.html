@@ -95,12 +95,16 @@ button { font:inherit; color:inherit; background:none; border:none; cursor:point
   text-align:center; text-shadow:0 2px 6px rgba(0,0,0,.9);
   font-size:clamp(17px, 2.6vw + 8px, 30px); line-height:1.55;
 }
-#cap.off, #stage.audio #cap { display:none; }
-#cap .tr {
-  font-size:.66em; color:#cfccc0; font-style:italic; margin-top:5px;
-  display:none;
-}
-body.showtr #cap .tr, #cap.peek .tr { display:block; }
+#stage.audio #cap { display:none; }
+#cap .es { display:block; }
+#cap .tr { font-size:.66em; color:#cfccc0; font-style:italic; margin-top:5px; }
+
+/* Caption language is its own setting, independent of the transcript's
+   translation toggle - reading along and watching want different things. */
+#cap.m-off { display:none; }
+#cap.m-es  .tr { display:none; }
+#cap.m-en  .es { display:none; }
+#cap.peek  .tr { display:block; }
 #cap .w.s-new { background:rgba(122,101,40,.45); box-shadow:none; }
 #cap .w.s-learning { background:rgba(85,112,42,.45); box-shadow:none; }
 #cap .w.on { background:var(--accent); color:#14140f; text-shadow:none; }
@@ -123,13 +127,15 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
 
 /* ---- controls ---- */
 #ctl {
-  display:flex; gap:5px; padding:8px 10px calc(var(--bot) + 8px);
+  display:flex; flex-wrap:wrap; gap:5px;
+  padding:8px 10px calc(var(--bot) + 8px);
   background:var(--panel); border-top:1px solid var(--line);
   flex:0 0 auto;
 }
 #ctl button {
-  flex:1; padding:12px 0; border-radius:9px; background:#262620;
-  border:1px solid var(--line); font-size:12px; min-width:0;
+  flex:1 1 auto; min-width:44px; padding:12px 2px; border-radius:9px;
+  background:#262620; border:1px solid var(--line); font-size:12px;
+  white-space:nowrap;
 }
 #ctl button.on { background:var(--accent); color:#14140f; border-color:var(--accent); }
 
@@ -184,6 +190,31 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
   #ctl button { padding:10px 0; font-size:13px; }
 }
 
+/* Immersive playback.
+ *
+ * Tapping the video's own fullscreen button hands control to iOS's native
+ * player, which discards this overlay - captions vanish with it. This mode
+ * is built from our own DOM instead, so it behaves the same on iPhone and
+ * iPad and the captions come along. */
+body.immersive #bar,
+body.immersive #script,
+body.immersive #ctl { display:none; }
+body.immersive #stage {
+  position:fixed; inset:0; z-index:100;
+  flex:none; height:100%; width:100%;
+}
+body.immersive #cap {
+  font-size:clamp(20px, 3vw + 11px, 34px);
+  padding:30px 22px calc(var(--bot) + 58px);
+}
+#exitfs {
+  position:fixed; top:calc(var(--top) + 10px); right:12px; z-index:101;
+  display:none; width:40px; height:40px; border-radius:20px;
+  background:rgba(0,0,0,.55); color:#fff; font-size:19px; line-height:40px;
+  text-align:center; backdrop-filter:blur(6px);
+}
+body.immersive #exitfs { display:block; }
+
 #toast {
   position:fixed; left:50%; bottom:calc(var(--bot) + 80px); transform:translateX(-50%);
   background:#2c2c23; border:1px solid var(--line); border-radius:9px;
@@ -225,11 +256,13 @@ body.showtr .seg .tr, .seg.peek .tr { display:block; }
     <button id="peek">EN·1</button>
     <button id="tr" class="on">EN</button>
     <button id="cc">CC</button>
+    <button id="fs">⛶</button>
     <button id="ask">Ask</button>
   </div>
 </div>
 
 <input type="file" id="file" class="hidden" multiple>
+<button id="exitfs" aria-label="Exit full screen">✕</button>
 <div id="scrim"></div>
 <div id="sheet"></div>
 <div id="toast"></div>

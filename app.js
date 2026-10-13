@@ -16,7 +16,7 @@
 
 'use strict';
 
-const APP_VERSION = '2026-10-13a';
+const APP_VERSION = '2026-10-13b';
 
 /* Make silent failures visible: a script error anywhere shows up as a message
    instead of a button that simply does nothing. */
@@ -1445,19 +1445,23 @@ function applyCapMode(mode, announce) {
  */
 function setImmersive(on) {
   document.body.classList.toggle('immersive', on);
-  $('exitfs').style.display = on ? 'block' : 'none';
-  $('fs').classList.toggle('on', on);
+  const x = $('exitfs'); if (x) x.style.display = on ? 'block' : 'none';
+  const f = $('fs'); if (f) f.classList.toggle('on', on);
   // Captions are the whole point of this mode, so turn them on if they are off.
   if (on && capMode() === 'off') applyCapMode('es', true);
 }
 
-$('fs').onclick = () => setImmersive(!document.body.classList.contains('immersive'));
-$('exitfs').onclick = () => setImmersive(false);
+/* Bound defensively: if the page and script ever get out of step (a stale
+   cached index.html), a missing button must not stop the rest of the script
+   from loading. */
+const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+bind('fs', () => setImmersive(!document.body.classList.contains('immersive')));
+bind('exitfs', () => setImmersive(false));
 
-$('cc').onclick = () => {
+bind('cc', () => {
   const i = CAP_MODES.findIndex(m => m.id === capMode());
   applyCapMode(CAP_MODES[(i + 1) % CAP_MODES.length].id, true);
-};
+});
 
 /* =====================================================================
  * Speech playback via ElevenLabs.
