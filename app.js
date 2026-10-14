@@ -16,7 +16,7 @@
 
 'use strict';
 
-const APP_VERSION = '2026-10-13d';
+const APP_VERSION = '2026-10-14a';
 
 /* Make silent failures visible: a script error anywhere shows up as a message
    instead of a button that simply does nothing. */
@@ -137,6 +137,7 @@ const S = {
   lessons: [],      // manifests
   vocab: {},        // 'es:lemma' -> status
   studied: {},      // lessonId -> seconds
+  folders: {},      // lessonId -> folder name (absent = unsorted)
   days: {},         // 'YYYY-MM-DD' -> { read, listen } seconds
   doc: null,        // current lesson content
   man: null,        // current manifest
@@ -188,6 +189,9 @@ async function emit(kind, payload) {
 
 function applyEvent(ev) {
   if (ev.kind === 'status') S.vocab[ev.key] = ev.value;
+  else if (ev.kind === 'folder') {
+    if (ev.name) S.folders[ev.lesson] = ev.name; else delete S.folders[ev.lesson];
+  }
   else if (ev.kind === 'study') {
     S.studied[ev.lesson] = (S.studied[ev.lesson] || 0) + ev.value;
     // Bucket by local day. Events have always carried a timestamp, so this
@@ -199,7 +203,7 @@ function applyEvent(ev) {
 }
 
 async function replayEvents() {
-  S.vocab = {}; S.studied = {}; S.days = {};
+  S.vocab = {}; S.studied = {}; S.days = {}; S.folders = {};
   const all = await req(tx('events').getAll());
   all.sort((a, b) => a.ts - b.ts);   // last write per key wins
   all.forEach(applyEvent);
@@ -251,21 +255,41 @@ async function loadLibrary() {
   renderLibrary();
 }
 
-function renderLibrary() {
-  const list = $('list');
-  const has = S.lessons.length > 0;
-  $('empty').classList.toggle('hidden', has);
-  $('import2').classList.toggle('hidden', !has);
+/* Folders group lessons by topic, source, teacher - whatever you choose.
+ * They are separate from a lesson's series (book chapters). Assignment is an
+ * event, so folders survive deleting and re-importing a lesson, ride along in
+ * backups, and merge across devices like everything else. */
 
-  if (!has) { list.innerHTML = ''; return; }
+const folderOf = id => (S.folders && S.folders[id]) || '';
 
-  const groups = new Map();
+function folderCounts() {
+  const m = new Map();
   S.lessons.forEach(r => {
+    const f = folderOf(r.man.id);
+    if (f) m.set(f, (m.get(f) || 0) + 1);
+  });
+  return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0]));
+}
+
+function curFilter() {
+  let f = '@all';
+  try { f = localStorage.getItem('lingua.folder') || '@all'; } catch (e) {}
+  if (f === '@all' || f === '@none') return f;
+  return folderCounts().some(([n]) => n === f) ? f : '@all';
+}
+function setFilter(f) {
+  try { localStorage.setItem('lingua.folder', f); } catch (e) {}
+  renderLibrary();
+  const lib = $('library'); if (lib) lib.scrollTop = 0;
+}
+
+function cardsHtml(rows) {
+  const groups = new Map();
+  rows.forEach(r => {
     const k = r.man.series || '';
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(r);
   });
-
   let html = '';
   const keys = [...groups.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
   for (const k of keys) {
@@ -285,11 +309,108 @@ function renderLibrary() {
           <div class="meta">${r.man.kind} · ${mins} min · ${r.man.segments} sentences${done}</div>
           <div class="known">${pct}% known words (${known}/${total})</div>
         </div>
+        <button class="mv" data-move="${r.man.id}" aria-label="Move to folder">⋯</button>
         <button class="del" data-del="${r.man.id}">×</button>
       </div>`;
     }
   }
+  return html;
+}
+
+function renderLibrary() {
+  const list = $('list');
+  const has = S.lessons.length > 0;
+  $('empty').classList.toggle('hidden', has);
+  $('import2').classList.toggle('hidden', !has);
+
+  if (!has) { list.innerHTML = ''; return; }
+
+  const folders = folderCounts();
+  const unsorted = S.lessons.filter(r => !folderOf(r.man.id));
+  const f = curFilter();
+
+  let html = '';
+  if (folders.length) {
+    const chip = (id, label, n) =>
+      `<button class="chip${f === id ? ' on' : ''}" data-chip="${esc(id)}">${esc(label)} <span>${n}</span></button>`;
+    html += '<div class="chips">'
+      + chip('@all', 'All', S.lessons.length)
+      + folders.map(([n, c]) => chip(n, n, c)).join('')
+      + (unsorted.length ? chip('@none', 'Unsorted', unsorted.length) : '')
+      + '</div>';
+    if (f !== '@all' && f !== '@none') {
+      html += `<div class="fbar"><span>${esc(f)}</span>`
+        + `<button data-fmanage="1">Rename / delete</button></div>`;
+    }
+  }
+
+  if (f === '@all') {
+    // Folder sections first, then whatever is not filed yet.
+    for (const [n] of folders) {
+      html += `<div class="folder">${esc(n)}</div>`
+        + cardsHtml(S.lessons.filter(r => folderOf(r.man.id) === n));
+    }
+    if (unsorted.length) {
+      if (folders.length) html += `<div class="folder">Unsorted</div>`;
+      html += cardsHtml(unsorted);
+    }
+  } else if (f === '@none') {
+    html += cardsHtml(unsorted);
+  } else {
+    html += cardsHtml(S.lessons.filter(r => folderOf(r.man.id) === f));
+  }
   list.innerHTML = html;
+}
+
+async function moveLesson(id, name) {
+  name = (name || '').trim().slice(0, 40);
+  await emit('folder', { lesson: id, name });
+}
+
+function showMove(id) {
+  const row = S.lessons.find(r => r.man.id === id);
+  if (!row) return;
+  const cur = folderOf(id);
+  const names = folderCounts();
+  showSheet(`<div class="hw">${esc(row.man.title)}</div>
+    <div class="lm">${cur ? 'In folder: ' + esc(cur) : 'Not in a folder'}</div>
+    ${names.length ? `<div class="row" style="flex-wrap:wrap">${names.map(([n]) =>
+        `<button data-f="${esc(n)}" class="${n === cur ? 'on' : ''}">${esc(n)}</button>`).join('')}
+        ${cur ? '<button data-f="">Remove from folder</button>' : ''}</div>` : ''}
+    <div class="lm" style="margin-top:12px">New folder</div>
+    <div class="row"><input id="nf" placeholder="Topic, source or teacher" maxlength="40" style="flex:1">
+      <button id="nfgo">Create</button></div>
+    <div class="row"><button id="sheetclose">Cancel</button></div>`);
+  const done = async name => {
+    await moveLesson(id, name);
+    hideSheet();
+    renderLibrary();       // stay in the current view so a batch of moves is quick
+  };
+  $('sheet').querySelectorAll('[data-f]').forEach(b => b.onclick = () => done(b.dataset.f));
+  $('nfgo').onclick = () => { const v = $('nf').value.trim(); if (v) done(v); };
+  $('nf').onkeydown = e => { if (e.key === 'Enter') $('nfgo').click(); };
+  $('sheetclose').onclick = hideSheet;
+}
+
+function showFolderManage(name) {
+  const rows = S.lessons.filter(r => folderOf(r.man.id) === name);
+  showSheet(`<div class="hw">${esc(name)}</div>
+    <div class="lm">${rows.length} lesson${rows.length === 1 ? '' : 's'}</div>
+    <div class="row"><input id="rn" value="${esc(name)}" maxlength="40" style="flex:1">
+      <button id="rngo">Rename</button></div>
+    <div class="row"><button id="fdel">Delete folder (lessons are kept)</button></div>
+    <div class="row"><button id="sheetclose">Cancel</button></div>`);
+  $('sheetclose').onclick = hideSheet;
+  $('rngo').onclick = async () => {
+    const to = $('rn').value.trim().slice(0, 40);
+    if (!to || to === name) { hideSheet(); return; }
+    for (const r of rows) await moveLesson(r.man.id, to);
+    hideSheet(); setFilter(to);
+  };
+  $('fdel').onclick = async () => {
+    for (const r of rows) await moveLesson(r.man.id, '');
+    hideSheet(); setFilter('@all');
+  };
 }
 
 /* ------------------------------------------------------------- player */
@@ -920,6 +1041,11 @@ async function showMenu() {
 /* ----------------------------------------------------------- listeners */
 
 $('list').addEventListener('click', async e => {
+  const chip = e.target.closest('[data-chip]');
+  if (chip) { setFilter(chip.dataset.chip); return; }
+  if (e.target.closest('[data-fmanage]')) { showFolderManage(curFilter()); return; }
+  const mv = e.target.closest('[data-move]');
+  if (mv) { showMove(mv.dataset.move); return; }
   const del = e.target.closest('[data-del]');
   if (del) {
     const row = S.lessons.find(r => r.man.id === del.dataset.del);

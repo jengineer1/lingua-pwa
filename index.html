@@ -61,6 +61,21 @@ button { font:inherit; color:inherit; background:none; border:none; cursor:point
 .card .meta { font-size:12px; color:var(--dim); }
 .card .known { font-size:12px; color:var(--accent); margin-top:3px; }
 .card .del { color:var(--dim); font-size:20px; padding:6px 10px; }
+
+.card .mv { color:var(--dim); font-size:20px; padding:6px 10px; }
+.chips { display:flex; gap:7px; overflow-x:auto; margin:0 -14px 12px; padding:2px 14px 4px;
+  -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+.chips::-webkit-scrollbar { display:none; }
+.chip { flex:none; padding:7px 13px; border-radius:999px; background:var(--panel);
+  border:1px solid var(--line); color:var(--fg); font-size:14px; white-space:nowrap; }
+.chip span { color:var(--dim); font-size:12px; margin-left:2px; }
+.chip.on { background:var(--accent); border-color:var(--accent); color:#14140f; }
+.chip.on span { color:#14140f; opacity:.7; }
+.fbar { display:flex; align-items:center; justify-content:space-between;
+  margin:0 0 10px; font-size:13px; color:var(--dim); }
+.fbar button { color:var(--dim); font-size:13px; text-decoration:underline; padding:4px 0; }
+.folder { font-size:13px; font-weight:600; color:var(--accent); margin:18px 0 8px; }
+.folder:first-child { margin-top:2px; }
 .series { font-size:12px; color:var(--dim); text-transform:uppercase;
   letter-spacing:.06em; margin:16px 0 7px; }
 #empty { text-align:center; color:var(--dim); padding:50px 24px; }
