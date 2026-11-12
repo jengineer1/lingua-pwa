@@ -16,7 +16,7 @@
 
 'use strict';
 
-const APP_VERSION = '2026-10-14a';
+const APP_VERSION = '2026-11-12a';
 
 /* Make silent failures visible: a script error anywhere shows up as a message
    instead of a button that simply does nothing. */
@@ -138,6 +138,8 @@ const S = {
   vocab: {},        // 'es:lemma' -> status
   studied: {},      // lessonId -> seconds
   folders: {},      // lessonId -> folder name (absent = unsorted)
+  meta: {},         // lessonId -> { title, series, chapter } overrides
+  sel: null,        // Set of selected lesson ids while selecting, else null
   days: {},         // 'YYYY-MM-DD' -> { read, listen } seconds
   doc: null,        // current lesson content
   man: null,        // current manifest
@@ -189,6 +191,11 @@ async function emit(kind, payload) {
 
 function applyEvent(ev) {
   if (ev.kind === 'status') S.vocab[ev.key] = ev.value;
+  else if (ev.kind === 'meta') {
+    // Renames are overrides layered over the package's own manifest, so a
+    // re-import or a restore on another device keeps the names you chose.
+    S.meta[ev.lesson] = Object.assign(S.meta[ev.lesson] || {}, ev.set || {});
+  }
   else if (ev.kind === 'folder') {
     if (ev.name) S.folders[ev.lesson] = ev.name; else delete S.folders[ev.lesson];
   }
@@ -203,7 +210,7 @@ function applyEvent(ev) {
 }
 
 async function replayEvents() {
-  S.vocab = {}; S.studied = {}; S.days = {}; S.folders = {};
+  S.vocab = {}; S.studied = {}; S.days = {}; S.folders = {}; S.meta = {};
   const all = await req(tx('events').getAll());
   all.sort((a, b) => a.ts - b.ts);   // last write per key wins
   all.forEach(applyEvent);
@@ -251,6 +258,7 @@ function lessonKnown(doc, lang) {
 
 async function loadLibrary() {
   const rows = await req(tx('lessons').getAll());
+  rows.forEach(r => overlay(r.man));
   S.lessons = rows;
   renderLibrary();
 }
@@ -259,6 +267,12 @@ async function loadLibrary() {
  * They are separate from a lesson's series (book chapters). Assignment is an
  * event, so folders survive deleting and re-importing a lesson, ride along in
  * backups, and merge across devices like everything else. */
+
+function overlay(man) {
+  const m = S.meta && S.meta[man.id];
+  if (m) Object.assign(man, m);
+  return man;
+}
 
 const folderOf = id => (S.folders && S.folders[id]) || '';
 
@@ -296,25 +310,37 @@ function cardsHtml(rows) {
     const items = groups.get(k).sort((a, b) =>
       (a.man.chapter || 0) - (b.man.chapter || 0) ||
       a.man.title.localeCompare(b.man.title));
-    if (k) html += `<div class="series">${esc(k)}</div>`;
+    if (k) {
+      html += `<div class="series" data-series="${esc(k)}"><span>${esc(k)}</span>`
+        + (S.sel ? '' : `<button class="sren" data-sren="${esc(k)}">Rename</button>`) + `</div>`;
+    }
     for (const r of items) {
       const { total, known } = lessonKnown(r.doc, r.man.language);
       const pct = total ? Math.round(known / total * 100) : 0;
       const mins = Math.round(r.man.duration / 60);
       const secs = S.studied[r.man.id] || 0;
       const done = secs > 30 ? ` · studied ${Math.round(secs / 60)}m` : '';
-      html += `<div class="card" data-id="${r.man.id}">
+      const picked = S.sel && S.sel.has(r.man.id);
+      html += `<div class="card${picked ? ' picked' : ''}" data-id="${r.man.id}">
+        ${S.sel ? `<span class="ck">${picked ? '✓' : ''}</span>` : ''}
         <div class="body">
           <h3>${esc(r.man.title)}</h3>
           <div class="meta">${r.man.kind} · ${mins} min · ${r.man.segments} sentences${done}</div>
           <div class="known">${pct}% known words (${known}/${total})</div>
         </div>
-        <button class="mv" data-move="${r.man.id}" aria-label="Move to folder">⋯</button>
-        <button class="del" data-del="${r.man.id}">×</button>
+        ${S.sel ? '' : `<button class="mv" data-move="${r.man.id}" aria-label="Edit or move">⋯</button>
+        <button class="del" data-del="${r.man.id}">×</button>`}
       </div>`;
     }
   }
   return html;
+}
+
+function viewRows() {
+  const f = curFilter();
+  if (f === '@all') return S.lessons.slice();
+  if (f === '@none') return S.lessons.filter(r => !folderOf(r.man.id));
+  return S.lessons.filter(r => folderOf(r.man.id) === f);
 }
 
 function renderLibrary() {
@@ -344,6 +370,13 @@ function renderLibrary() {
     }
   }
 
+  html += S.sel
+    ? `<div class="ltools"><span>${S.sel.size} selected</span><span>`
+      + `<button data-selall="1">All</button><button data-seldone="1">Done</button></span></div>`
+    : `<div class="ltools"><span></span><button data-selmode="1">Select</button></div>`;
+  $('library').classList.toggle('selecting', !!S.sel);
+  renderSelBar();
+
   if (f === '@all') {
     // Folder sections first, then whatever is not filed yet.
     for (const [n] of folders) {
@@ -367,29 +400,132 @@ async function moveLesson(id, name) {
   await emit('folder', { lesson: id, name });
 }
 
-function showMove(id) {
-  const row = S.lessons.find(r => r.man.id === id);
-  if (!row) return;
-  const cur = folderOf(id);
+function showMove(ids) {
+  ids = [].concat(ids);
+  const rows = ids.map(id => S.lessons.find(r => r.man.id === id)).filter(Boolean);
+  if (!rows.length) return;
+  const cur = rows.length === 1 ? folderOf(rows[0].man.id) : '';
   const names = folderCounts();
-  showSheet(`<div class="hw">${esc(row.man.title)}</div>
-    <div class="lm">${cur ? 'In folder: ' + esc(cur) : 'Not in a folder'}</div>
+  showSheet(`<div class="hw">${rows.length === 1 ? esc(rows[0].man.title) : rows.length + ' lessons'}</div>
+    <div class="lm">${rows.length > 1 ? 'Move all to…' : cur ? 'In folder: ' + esc(cur) : 'Not in a folder'}</div>
     ${names.length ? `<div class="row" style="flex-wrap:wrap">${names.map(([n]) =>
         `<button data-f="${esc(n)}" class="${n === cur ? 'on' : ''}">${esc(n)}</button>`).join('')}
-        ${cur ? '<button data-f="">Remove from folder</button>' : ''}</div>` : ''}
+        ${(cur || rows.length > 1) ? '<button data-f="">Remove from folder</button>' : ''}</div>` : ''}
     <div class="lm" style="margin-top:12px">New folder</div>
     <div class="row"><input id="nf" placeholder="Topic, source or teacher" maxlength="40" style="flex:1">
       <button id="nfgo">Create</button></div>
     <div class="row"><button id="sheetclose">Cancel</button></div>`);
   const done = async name => {
-    await moveLesson(id, name);
+    for (const r of rows) await moveLesson(r.man.id, name);
     hideSheet();
+    if (S.sel) S.sel = null;
     renderLibrary();       // stay in the current view so a batch of moves is quick
   };
   $('sheet').querySelectorAll('[data-f]').forEach(b => b.onclick = () => done(b.dataset.f));
   $('nfgo').onclick = () => { const v = $('nf').value.trim(); if (v) done(v); };
   $('nf').onkeydown = e => { if (e.key === 'Enter') $('nfgo').click(); };
   $('sheetclose').onclick = hideSheet;
+}
+
+async function setMeta(id, set) {
+  await emit('meta', { lesson: id, set });
+  const row = S.lessons.find(r => r.man.id === id);
+  if (row) overlay(row.man);
+}
+
+const seriesList = () => [...new Set(S.lessons.map(r => r.man.series).filter(Boolean))].sort();
+const seriesOptions = () => `<datalist id="sl">${seriesList().map(s => `<option value="${esc(s)}">`).join('')}</datalist>`;
+
+function showEdit(id) {
+  const row = S.lessons.find(r => r.man.id === id);
+  if (!row) return;
+  const m = row.man;
+  showSheet(`<div class="hw">Edit lesson</div>
+    <div class="lm">Title</div>
+    <div class="row"><input id="et" value="${esc(m.title)}" maxlength="120" style="flex:1"></div>
+    <div class="lm" style="margin-top:12px">Book or series (optional)</div>
+    <div class="row"><input id="es" list="sl" value="${esc(m.series || '')}" maxlength="80" style="flex:1"></div>
+    ${seriesOptions()}
+    <div class="lm" style="margin-top:12px">Chapter number (orders it within the series)</div>
+    <div class="row"><input id="ec" inputmode="numeric" value="${m.chapter == null ? '' : m.chapter}" style="width:90px"></div>
+    <div class="row"><button id="esave" class="on">Save</button>
+      <button id="efolder">Folder…</button><button id="sheetclose">Cancel</button></div>`);
+  $('sheetclose').onclick = hideSheet;
+  $('efolder').onclick = () => showMove([id]);
+  $('esave').onclick = async () => {
+    const title = $('et').value.trim() || m.title;
+    const series = $('es').value.trim();
+    const c = $('ec').value.trim();
+    const chapter = /^\d+$/.test(c) ? parseInt(c, 10) : null;
+    await setMeta(id, { title, series, chapter });
+    hideSheet(); renderLibrary();
+    if (S.man && S.man.id === id) $('title').textContent = title;
+  };
+}
+
+function showSeriesRename(name) {
+  const rows = S.lessons.filter(r => r.man.series === name);
+  showSheet(`<div class="hw">${esc(name)}</div>
+    <div class="lm">${rows.length} lesson${rows.length === 1 ? '' : 's'} in this series</div>
+    <div class="row"><input id="sn" value="${esc(name)}" maxlength="80" style="flex:1">
+      <button id="sngo">Rename</button></div>
+    <div class="row"><button id="sheetclose">Cancel</button></div>`);
+  $('sheetclose').onclick = hideSheet;
+  $('sngo').onclick = async () => {
+    const to = $('sn').value.trim();
+    if (!to || to === name) { hideSheet(); return; }
+    for (const r of rows) await setMeta(r.man.id, { series: to });
+    hideSheet(); renderLibrary();
+  };
+}
+
+function showSeriesSet(ids) {
+  showSheet(`<div class="hw">${ids.length} lesson${ids.length === 1 ? '' : 's'}</div>
+    <div class="lm">Put in book or series</div>
+    <div class="row"><input id="sn" list="sl" placeholder="Book title" maxlength="80" style="flex:1">
+      <button id="sngo">Set</button></div>
+    ${seriesOptions()}
+    <div class="row"><button id="snclear">Remove from series</button><button id="sheetclose">Cancel</button></div>`);
+  $('sheetclose').onclick = hideSheet;
+  const go = async v => {
+    for (const id of ids) await setMeta(id, { series: v });
+    hideSheet(); S.sel = null; renderLibrary();
+  };
+  $('sngo').onclick = () => { const v = $('sn').value.trim(); if (v) go(v); };
+  $('snclear').onclick = () => go('');
+}
+
+function renderSelBar() {
+  let bar = $('selbar');
+  if (!S.sel) { if (bar) bar.classList.add('hidden'); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'selbar';
+    document.body.appendChild(bar);
+    bar.addEventListener('click', onSelBar);
+  }
+  bar.classList.remove('hidden');
+  const n = S.sel.size;
+  bar.innerHTML = `<button data-sb="folder"${n ? '' : ' disabled'}>Folder</button>`
+    + `<button data-sb="series"${n ? '' : ' disabled'}>Book / series</button>`
+    + `<button data-sb="delete"${n ? '' : ' disabled'}>Delete</button>`;
+}
+
+async function onSelBar(e) {
+  const b = e.target.closest('[data-sb]');
+  if (!b || !S.sel || !S.sel.size) return;
+  const ids = [...S.sel];
+  if (b.dataset.sb === 'folder') showMove(ids);
+  else if (b.dataset.sb === 'series') showSeriesSet(ids);
+  else if (b.dataset.sb === 'delete') {
+    if (!confirm(`Delete ${ids.length} lesson${ids.length === 1 ? '' : 's'}? Your word progress is kept.`)) return;
+    for (const id of ids) {
+      await req(tx('lessons', 'readwrite').delete(id));
+      await req(tx('media', 'readwrite').delete(id));
+    }
+    S.sel = null;
+    await loadLibrary();
+  }
 }
 
 function showFolderManage(name) {
@@ -417,6 +553,7 @@ function showFolderManage(name) {
 
 async function openLesson(id) {
   const row = await req(tx('lessons').get(id));
+  if (row) overlay(row.man);
   const m = await req(tx('media').get(id));
   if (!row || !m) { toast('Lesson data missing'); return; }
 
@@ -1043,9 +1180,36 @@ async function showMenu() {
 $('list').addEventListener('click', async e => {
   const chip = e.target.closest('[data-chip]');
   if (chip) { setFilter(chip.dataset.chip); return; }
+  if (e.target.closest('[data-selmode]')) { S.sel = new Set(); renderLibrary(); return; }
+  if (e.target.closest('[data-seldone]')) { S.sel = null; renderLibrary(); return; }
+  if (e.target.closest('[data-selall]')) {
+    const rows = viewRows();
+    const all = rows.every(r => S.sel.has(r.man.id));
+    rows.forEach(r => all ? S.sel.delete(r.man.id) : S.sel.add(r.man.id));
+    renderLibrary(); return;
+  }
+  const sren = e.target.closest('[data-sren]');
+  if (sren) { showSeriesRename(sren.dataset.sren); return; }
+  if (S.sel) {
+    // Selecting: a card toggles; a series heading toggles all its chapters.
+    const sh = e.target.closest('[data-series]');
+    if (sh) {
+      const ids = viewRows().filter(r => r.man.series === sh.dataset.series).map(r => r.man.id);
+      const all = ids.every(id => S.sel.has(id));
+      ids.forEach(id => all ? S.sel.delete(id) : S.sel.add(id));
+      renderLibrary(); return;
+    }
+    const c = e.target.closest('.card');
+    if (c) {
+      const id = c.dataset.id;
+      if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id);
+      renderLibrary();
+    }
+    return;
+  }
   if (e.target.closest('[data-fmanage]')) { showFolderManage(curFilter()); return; }
   const mv = e.target.closest('[data-move]');
-  if (mv) { showMove(mv.dataset.move); return; }
+  if (mv) { showEdit(mv.dataset.move); return; }
   const del = e.target.closest('[data-del]');
   if (del) {
     const row = S.lessons.find(r => r.man.id === del.dataset.del);
